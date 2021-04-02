@@ -1,0 +1,11 @@
+# external requirements
+numpy
+pandas
+torch
+pyro-ppl
+ipykernel
+seaborn
+
+# local package
+-e .
+
