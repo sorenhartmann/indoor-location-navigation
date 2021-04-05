@@ -1,29 +1,21 @@
 # -*- coding: utf-8 -*-
-import logging
+import gzip
+import pickle
+import re
+import warnings
+from itertools import tee
+from multiprocessing import Pool
 from pathlib import Path
 
-from itertools import tee
-import re
 import pandas as pd
-import seaborn as sns
-import matplotlib.dates as mdates
-import matplotlib.pyplot as plt
-import pickle
-import gzip
-from multiprocessing import Pool
 from tqdm import tqdm
-from time import time
 
-import warnings
-
-# not used in this stub but often useful for finding various files
 project_dir = Path(__file__).resolve().parents[2]
 
 raw_path = project_dir / "data" / "raw"
 interim_path = project_dir / "data" / "interim"
 
-
-# None means ignore
+# None means ignore field
 DATA_DESCRIPTIONS = {
     "TYPE_WAYPOINT": {
         "x": float,
@@ -100,52 +92,6 @@ DATA_DESCRIPTIONS = {
 }
 
 
-# def process_trace(trace_file):
-
-#     logger.debug(f"Proccessing trace {trace_file.name}")
-
-#     with open(trace_file) as f:
-#         start_time_string = re.search("(\d+)", next(f)).group(0)
-#         start_time = int(start_time_string)
-
-#     raw = pd.read_csv(trace_file, comment="#", header=None)
-
-#     missing_nl_pattern = f"(?<!^)([0-9]{{{len(start_time_string)}}}\\tTYPE_[A-Z_]+)"
-
-#     with warnings.catch_warnings():
-#         warnings.simplefilter("ignore", UserWarning)
-#         missing_nl = raw[0].str.contains(missing_nl_pattern)
-
-
-#     fixed_strings = raw[0][missing_nl].map(_fix_newlines).explode()
-
-#     strings = raw[0][~missing_nl].append(fixed_strings)
-#     groups = strings.str.split("\t", n=2, expand=True).groupby(1)
-
-#     data_frames = {}
-
-#     for name, df in groups:
-
-#         time = pd.to_timedelta((df[0].astype(int) - start_time), unit="ns")
-#         data = df[2].str.split("\t", expand=True)
-
-#         data_description = DATA_DESCRIPTIONS[name]
-
-#         n_cols = len(data.columns)
-#         keys = data_description.keys()
-
-#         out = data.set_index(time)
-#         out.index.name = "time"
-#         out.columns = keys
-
-#         # if "accuracy" not in out:
-#         #     out["accuracy"] = None
-
-#         out = out.astype(data_description)
-
-#         data_frames[name] = out
-
-
 def pairwise(iterable):
     "s -> (s0,s1), (s1,s2), (s2, s3), ..."
     a, b = tee(iterable)
@@ -190,8 +136,6 @@ def extract_data(type_, data_frame, start_time):
     Extracts data of given type from `data_frame`
     """
 
-    
-
     data_frame = data_frame["data"].str.split("\t", expand=True)
 
     time = data_frame.index.droplevel(1).astype(int)
@@ -210,14 +154,12 @@ def extract_data(type_, data_frame, start_time):
 
     data_frame = data_frame.drop(columns=drop_keys)
 
-    data_frame = data_frame.astype(
-        {key: data_description[key] for key in keep_keys}
-    )
+    data_frame = data_frame.astype({key: data_description[key] for key in keep_keys})
 
     return data_frame
 
 
-def load_trace_file(trace_path : Path):
+def load_trace_file(trace_path: Path):
 
     with open(trace_path) as f:
         start_time = int(re.search("(\d+)", next(f)).group(0))
@@ -237,18 +179,20 @@ def load_trace_file(trace_path : Path):
 
     return data_frames
 
-def _process_trace_file(trace_path : Path):
+
+def _process_trace_file(trace_path: Path):
 
     sub_path = trace_path.relative_to(raw_path)
     new_path = (interim_path / sub_path).with_suffix(".pkl.gz")
     if new_path.exists():
-        return # Dont recreate file
+        return  # Dont recreate file
 
     new_path.parent.mkdir(parents=True, exist_ok=True)
 
     data_frames = load_trace_file(trace_path)
     with gzip.open(new_path, "wb") as f:
         pickle.dump(data_frames, f)
+
 
 def iter_train_files():
     for site_dir in (raw_path / "train").iterdir():
@@ -259,12 +203,13 @@ def iter_train_files():
                 continue
             for trace_path in floor_dir.iterdir():
                 if trace_path.suffix == ".txt":
-                    yield trace_path 
+                    yield trace_path
+
 
 def iter_test_files():
     for trace_path in (raw_path / "test").iterdir():
         if trace_path.suffix == ".txt":
-            yield trace_path 
+            yield trace_path
 
 
 if __name__ == "__main__":
@@ -282,27 +227,3 @@ if __name__ == "__main__":
 
         for result in tqdm(iter_, desc="Extracting test files", total=len(files)):
             pass
-
-
-    # print(time() - t)
-            
-            # print(d)
-
-    # t = time()
-    # files =  (f for f in floor_dir.iterdir() if f.suffix == ".txt")
-    # for file in tqdm(files):
-    #     _process_trace_file(file)
-    # print(time() - t)
-
-    # load_trace_file(trace_path)
-
-
-    # for site_dir in (raw_path / "train").iterdir():
-    #     if not site_dir.is_dir():
-    #         continue
-    #     logger.info(f"Processing site {site_dir.name}")
-    #     for floor_dir in site_dir.iterdir():
-    #         if not floor_dir.is_dir():
-    #             continue
-    #         logger.info(f"Processing floor {floor_dir.name}")
-            

@@ -32,7 +32,7 @@ INTERIM_FILES := $(patsubst ./data/raw/%.txt, ./data/interim/%.pkl.gz, $(RAW_FIL
 ## Interim compressed data
 interim-data: $(INTERIM_FILES)
 	
-./data/interim/%.pkl.gz: ./data/raw/%.txt # Extract script?
+./data/interim/%.pkl.gz: ./data/raw/%.txt
 	$(PYTHON_INTERPRETER) src/data/extract_data.py
 
 ## Raw data
