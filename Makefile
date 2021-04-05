@@ -26,6 +26,16 @@ endif
 #################################################################################
 
 
+RAW_FILES := $(shell find ./data/raw -name "*.txt")
+INTERIM_FILES := $(patsubst ./data/raw/%.txt, ./data/interim/%.pkl.gz, $(RAW_FILES))
+
+## Interim compressed data
+interim-data: $(INTERIM_FILES)
+	
+./data/interim/%.pkl.gz: ./data/raw/%.txt # Extract script?
+	$(PYTHON_INTERPRETER) src/data/extract_data.py
+
+## Raw data
 
 #################################################################################
 # Self Documenting Commands                                                     #
