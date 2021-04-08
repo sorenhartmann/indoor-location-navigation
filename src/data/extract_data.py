@@ -75,7 +75,7 @@ DATA_DESCRIPTIONS = {
 }
 
 
-@functools.cache
+@functools.lru_cache(None)
 def get_file_tree():
 
     with zipfile.ZipFile(raw_path / RAW_FILE_NAME) as zip_file:
