@@ -5,6 +5,8 @@ torch
 pyro-ppl
 ipykernel
 seaborn
+Pillow
+kaggle
 
 # local package
 -e .

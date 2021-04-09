@@ -1,4 +1,4 @@
-.PHONY: clean data lint requirements sync_data_to_s3 sync_data_from_s3
+.PHONY: clean data lint requirements
 
 #################################################################################
 # GLOBALS                                                                       #
@@ -26,14 +26,28 @@ endif
 #################################################################################
 
 
-RAW_FILES := $(shell find ./data/raw -name "*.txt")
-INTERIM_FILES := $(patsubst ./data/raw/%.txt, ./data/interim/%.pkl.gz, $(RAW_FILES))
+# RAW_FILES := $(shell find ./data/raw -name "*.txt")
+# INTERIM_FILES := $(patsubst ./data/raw/%.txt, ./data/interim/%.pkl.gz, $(RAW_FILES))
 
-## Interim compressed data
-interim-data: $(INTERIM_FILES)
+## Download data from kaggle
+raw-data: data/raw/indoor-location-navigation.zip
+
+data/raw/indoor-location-navigation.zip:
+	cd ./data/raw
+	kaggle competitions download -c indoor-location-navigation
+
+# # Generates list of files in zip archive
+# data/interim/file_list.txt: data/raw/indoor-location-navigation.zip
+# 	python -m zipfile -l $< | grep -Eo "^[^ ]+" > $@
+
+## Interim data frames
+
+
+
+# interim-data: $(INTERIM_FILES)
 	
-./data/interim/%.pkl.gz: ./data/raw/%.txt
-	$(PYTHON_INTERPRETER) src/data/extract_data.py
+# ./data/interim/%.pkl.gz: ./data/raw/%.txt
+# # 	$(PYTHON_INTERPRETER) src/data/extract_data.py
 
 ## Raw data
 

@@ -1,8 +1,18 @@
+from io import BytesIO
 import pickle
 import gzip
 from pathlib import Path
 from functools import cached_property
-from dataclasses import dataclass
+from dataclasses import dataclass, InitVar
+import re
+from PIL import Image
+import json
+from src.data.extract_data import RAW_FILE_NAME, get_file_tree, get_trace_data 
+import zipfile
+import pandas as pd
+from contextlib import ExitStack
+import functools
+from tqdm import tqdm
 
 project_dir = Path(__file__).resolve().parents[2]
 
@@ -10,63 +20,92 @@ raw_path = project_dir / "data" / "raw"
 interim_path = project_dir / "data" / "interim"
 
 @dataclass
+class TestDataset:
+    pass
+
+
+@dataclass
 class SiteDataset:
 
-    site_id : str
+    site_id: str
 
     def __post_init__(self) -> None:
 
-        # TODO: Train test split
-        site_dir = interim_path / "train" / self.site_id
-        assert site_dir.is_dir(), "Site not found"
-
-        floor_ids = [dir_.name for dir_ in site_dir.iterdir() if dir_.is_dir()]
-
-        self.floors = {
-            floor_id: FloorDataset(self.site_id, floor_id) for floor_id in floor_ids
-        }
-
-        pass
+        file_tree = get_file_tree()
+        floor_ids = file_tree["train"][self.site_id]
+        self.floors = [FloorDataset(self.site_id, floor_id) for floor_id in floor_ids]
 
 
 @dataclass
 class FloorDataset:
 
-    site_id : str
-    floor_id : str
+    site_id: str
+    floor_id: str
 
     def __post_init__(self) -> None:
 
-        floor_dir = interim_path / "train" / self.site_id / self.floor_id
-        assert floor_dir.is_dir(), "Invalid site- and/or floor-id"
+        file_tree = get_file_tree()
+        trace_ids = file_tree["train"][self.site_id][self.floor_id]
 
-        trace_ids = [
-            file_.with_suffix("").stem
-            for file_ in floor_dir.iterdir()
-            if file_.suffix == ".gz"
+        # TODO: Train test split
+        self.traces = [
+            TraceData(self.site_id, self.floor_id, trace_id) for trace_id in trace_ids
         ]
 
-        self.traces = {
-            trace_id: TraceData(self.site_id, self.floor_id, trace_id) for trace_id in trace_ids
-        }
+    @cached_property
+    def image(self):
+
+        image_path = Path("metadata") / self.site_id / self.floor_id / "floor_image.png"
+        with zipfile.ZipFile(raw_path / RAW_FILE_NAME) as zip_file:
+            file_path = zipfile.Path(zip_file) / image_path
+
+            with file_path.open("rb") as f:
+                bytes_ = BytesIO(f.read())
+
+        return Image.open(bytes_)        
+
+    @cached_property
+    def info(self):
+
+        info_path =  Path("metadata") / self.site_id / self.floor_id / "floor_info.json"
+
+        with zipfile.ZipFile(raw_path / RAW_FILE_NAME) as zip_file:
+
+            file_path = zipfile.Path(zip_file) / info_path
+            with file_path.open("r") as f:
+                return json.load(f)
+
+    def extract_traces(self):
+        for trace in tqdm(self.traces):
+            trace.data
 
 @dataclass
 class TraceData:
 
-    site_id : str
-    floor_id : str
-    trace_id : str
-
-    def __post_init__(self):
-
-        trace_dir = interim_path / "train" / self.site_id / self.floor_id / f"{self.trace_id}.pkl.gz"
-        assert trace_dir.exists(), "Invalid site- and/or floor- and/or trace-id"
+    site_id: str
+    floor_id: str
+    trace_id: str
         
-        self._trace_dir = trace_dir
-
     @cached_property
     def data(self):
-        with gzip.open(self._trace_dir) as f:
-            return pickle.load(f)
 
+        sub_path = Path("train") / self.site_id / self.floor_id / self.trace_id
+        cached_path = (interim_path / sub_path).with_suffix(".pkl.gz")
+        
+        try:
+            with gzip.open(cached_path, "rb") as f:
+                data = pickle.load(f)
+        except FileNotFoundError:
+            data = get_trace_data(sub_path.with_suffix(".txt"))
+            cached_path.parent.mkdir(parents=True, exist_ok=True)
+            with gzip.open(cached_path, "wb") as f:
+                pickle.dump(data, f)
 
+        return data
+
+if __name__ == "__main__":
+
+    site_data = SiteDataset("5a0546857ecc773753327266")
+    site_data.floors[0].traces[0].data
+    site_data.floors[0].image
+    site_data.floors[0].extract_traces()
