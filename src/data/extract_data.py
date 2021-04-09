@@ -78,6 +78,12 @@ DATA_DESCRIPTIONS = {
 @functools.lru_cache(None)
 def get_file_tree():
 
+    cached_file = interim_path / "file_tree.pkl"
+
+    if cached_file.exists():
+        with open(cached_file, "rb") as f:
+            return(pickle.load(f))
+
     with zipfile.ZipFile(raw_path / RAW_FILE_NAME) as zip_file:
         file_names = pd.Series([file_.filename for file_ in zip_file.filelist])
 
@@ -97,6 +103,9 @@ def get_file_tree():
                 .str.replace(".txt", "", regex=False)
                 .tolist()
             )
+
+    with open(cached_file, "wb") as f:
+        pickle.dump(file_tree, f)
 
     return file_tree
 
