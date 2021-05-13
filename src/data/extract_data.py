@@ -155,7 +155,8 @@ def get_trace_data(trace_path):
         file_path = zipfile.Path(zip_file) / trace_path
 
         with file_path.open("r") as f:
-            start_time = int(re.search("(\d+)", next(f)).group(0))
+            first_line = next(f)
+            start_time = int(re.search("(\d+)", first_line.decode()).group(0))
             raw = pd.read_csv(f, comment="#", header=None)
 
     observations = fix_newlines(raw[0])
