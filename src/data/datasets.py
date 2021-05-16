@@ -82,6 +82,47 @@ class FloorDataset:
         for trace in tqdm(self.traces):
             trace.data
 
+    
+    def _get_matrices(self, ms=100):
+
+        data = self._get_data(cache=False)
+
+        position = data["TYPE_WAYPOINT"]
+        position = position.rename(columns=lambda x: f"pos:{x}")
+
+        wifi = data["TYPE_WIFI"]
+
+        def _apply(group):
+            bssid = group["bssid"].iloc[0]
+            return pd.Series(group["rssi"], name=f"wifi:{bssid}")
+
+        wifi_split = pd.DataFrame()
+        wifi_series = wifi.groupby("bssid").apply(_apply)
+        for bssid in wifi_series.index.get_level_values(0).unique():
+            wifi_split[bssid] = wifi_series[bssid]
+
+        end_point = max(position.index[-1], wifi.index[-1])
+        new_index = pd.timedelta_range(0, end_point, freq=f"{ms}ms")
+        new_index.name = "time"
+        df = pd.DataFrame(index=new_index)
+
+        resampled_data = (
+            df.pipe(pd.merge_ordered, position, "time")
+            .pipe(pd.merge_ordered, wifi_split, "time")
+            .bfill(limit=1)
+            .set_index("time")
+            .loc[new_index]
+        )
+
+        position = jnp.array(resampled_data[position.columns].values)
+        wifi = jnp.array(resampled_data[wifi_split.columns].values)
+
+        return {
+            "position" : position,
+            "wifi" : wifi,
+        }
+
+
 
 @dataclass
 class TraceData:
@@ -151,8 +192,6 @@ class TraceData:
         new_index.name = "time"
         df = pd.DataFrame(index=new_index)
 
-        wifi.groupby("bssid").get_group("fd0bdf5a4dca2566935b14a78c441846b4fbda57")
-
         resampled_data = (
             df.pipe(pd.merge_ordered, position, "time")
             .pipe(pd.merge_ordered, wifi_split, "time")
@@ -161,15 +200,16 @@ class TraceData:
             .loc[new_index]
         )
 
-        position = jnp.array(resampled_data[position.columns].values)
-        wifi = jnp.array(resampled_data[wifi_split.columns].values)
+        position = resampled_data[position.columns].values
+        wifi = resampled_data[wifi_split.columns].values
+        time  = resampled_data.index.total_seconds()
 
         return {
             "position" : position,
             "wifi" : wifi,
+            "time" : time,
         }
 
-        print(resampled_data.values)
 
 if __name__ == "__main__":
 
