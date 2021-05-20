@@ -1,11 +1,13 @@
 from pyro import sample, plate
 
+
 from scipy.linalg import null_space, lstsq
 from torch.nn.modules import Linear, Module, Softplus, ReLU, Sigmoid
 from torch.nn.modules.container import Sequential
 
 from src.data.datasets import SiteDataset
 import torch
+from torch.distributions import constraints
 import seaborn as sns
 import pyro
 from src.data.datasets import SiteDataset
@@ -122,20 +124,29 @@ class InitialModel(torch.nn.Module):
             (torch.isnan(self.position[:, 0])).nonzero().flatten()
         )
 
+        self.wifi_is_observed = (
+            ~torch.isnan(self.wifi)
+        )
+
         self.trace_guide = TraceGuide(
             loc_bias=self.position[0],
             time_min_max = (self.time[0], self.time[-1]),
             )
+        self.wifi_location = None
+        self.loc = None
 
     def model(self):
 
         pyro.module("initial_model", self)
 
-        sigma_eps = 0.1
-        sigma = 0.1
+        # Normal walking tempo is 1,4 m/s
+        sigma_eps = 0.2 #std [m/100ms]  
+        sigma = 0.01 #std of noise measurement [m] 
 
+        #Wifi signal strength priors
         mu_omega_0 = -45
-        sigma_omega_0 = 5
+        sigma_omega_0 = 10 # signal stregth uncertainty
+        sigma_omega = 0.1 #How presis is the measured signal stregth
 
         x = torch.zeros((self.T, 2))
         x[0, :] = sample("x_0", floor_uniform)
@@ -147,6 +158,19 @@ class InitialModel(torch.nn.Module):
             "x_hat",
             dist.Normal(x[self.position_is_observed], sigma).to_event(2),
             obs=self.position[self.position_is_observed],
+        )
+
+        with plate("wifis", self.K) as ind:
+            omega_0 = sample("omega_0", dist.Normal(mu_omega_0, sigma_omega_0).to_event(0))
+            self.wifi_location = sample("wifi_location", floor_uniform)
+        
+        distance = torch.cdist(x,self.wifi_location, p=2) 
+        signal_strength= omega_0 - 2*torch.log(distance)
+
+        omega = sample(
+            name="omega",
+            fn=dist.Normal(loc=signal_strength[self.wifi_is_observed], scale=sigma_omega).to_event(1),
+            obs=self.wifi[self.wifi_is_observed]
         )
 
     def guide(self, annealing_factor=1.0):
@@ -162,6 +186,25 @@ class InitialModel(torch.nn.Module):
                     dist.Normal(location[t, :], scale).to_event(1),
                 )
 
+        #mu_q = pyro.param("mu_q", lambda: torch.full((self.K,1), 50, dtype = torch.float32),event_dim=1,
+        #                 constraint=constraints.positive)
+        #sigma_q = pyro.param("beta_q", lambda: torch.full((self.K,1), 0.1,dtype = torch.float32),event_dim=1,
+        #                constraint=constraints.positive)
+
+        mu_q = pyro.param("mu_q", lambda: torch.full((1,1), 50, dtype = torch.float32),event_dim=1,
+                         constraint=constraints.positive)
+        sigma_q = pyro.param("beta_q", lambda: torch.full((1,1), 0.1,dtype = torch.float32),event_dim=1,
+                        constraint=constraints.positive)
+
+
+        with plate("wifis", self.K):
+            omega_0 = sample("omega_0", dist.Normal(-mu_q, sigma_q).to_event(0))
+            self.loc = pyro.param("loc",lambda: torch.full((self.K, 2), 50, dtype = torch.float32),event_dim=1)
+            #loc2 = pyro.param("loc2",event_dim=1)
+            #cov = pyro.param("cov",lambda: torch.full((self.K,2), 0.01),
+            #             constraint=constraints.positive)
+
+            self.wifi_location = sample("wifi_location", dist.MultivariateNormal(self.loc, torch.tensor([[0.5,0],[0,0.5]])))
 
 if __name__ == "__main__":
 
