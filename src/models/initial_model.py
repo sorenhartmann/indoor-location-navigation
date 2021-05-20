@@ -1,3 +1,4 @@
+
 from pyro import sample, plate
 
 from scipy.linalg import null_space, lstsq
@@ -17,7 +18,6 @@ height, width = floor.info["map_info"]["height"], floor.info["map_info"]["width"
 floor_uniform = dist.Uniform(
     low=torch.tensor([0.0, 0.0]), high=torch.tensor([height, width])
 ).to_event(1)
-
 
 class TraceGuide(Module):
     def __init__(self, layer_sizes=None, loc_bias=None, time_min_max=None):
@@ -64,44 +64,8 @@ class TraceGuide(Module):
 
         return location, scale
 
-
-# class Spline(torch.nn.Module):
-#     def __init__(self, knots, values, order=4):
-
-#         super().__init__()
-
-#         self.knots = knots
-#         self.values = values
-#         self.order = order
-
-#         X = self.basis(knots)
-
-#         coeffs, _, _, _ = lstsq(X, values)
-#         n_space = null_space(X)
-
-#         self.register_buffer("coeffs", torch.tensor(coeffs))
-#         self.register_buffer("null_space", torch.tensor(n_space))
-
-#         self.register_parameter(
-#             "free_parameters",
-#             torch.nn.Parameter(torch.zeros((self.null_space.shape[1]))),
-#         )
-
-#         self.to(dtype=torch.float)
-
-#     def basis(self, x):
-
-#         return torch.stack(
-#             [x.pow(i) for i in range(self.order)]
-#             + [torch.relu(x - knot).pow(self.order - 1) for knot in self.knots[1:-1]]
-#         ).T
-
-#     def forward(self, x):
-
-#         return self.basis(x) @ (self.coeffs + self.null_space @ self.free_parameters)
-
-
 class InitialModel(torch.nn.Module):
+
     def __init__(self, trace_data):
 
         super().__init__()
@@ -122,12 +86,16 @@ class InitialModel(torch.nn.Module):
             (torch.isnan(self.position[:, 0])).nonzero().flatten()
         )
 
+        self.wifi_mask = ~torch.isnan(self.wifi)
+        self.wifi_is_observed = self.wifi_mask.any(axis=1)
+
         self.trace_guide = TraceGuide(
             loc_bias=self.position[0],
             time_min_max = (self.time[0], self.time[-1]),
             )
+            
 
-    def model(self):
+    def model(self, annealing_factor=1.):
 
         pyro.module("initial_model", self)
 
@@ -143,11 +111,20 @@ class InitialModel(torch.nn.Module):
         for t in pyro.markov(range(1, self.T)):
             x[t, :] = sample(f"x_{t}", dist.Normal(x[t - 1], sigma_eps).to_event(1))
 
-        x_hat = sample(
-            "x_hat",
-            dist.Normal(x[self.position_is_observed], sigma).to_event(2),
-            obs=self.position[self.position_is_observed],
-        )
+        with pyro.plate("x_observed", len(self.position_is_observed)):
+            sample(
+                "x_hat",
+                dist.Normal(x[self.position_is_observed], sigma).to_event(1),
+                obs=self.position[self.position_is_observed],
+            )
+
+
+        with plate("wifis", self.K):
+            omega_0 = sample("omega_0", dist.Normal(mu_omega_0, sigma_omega_0))
+            wifi_locations = sample("wifi_location", floor_uniform)
+            distance = torch.cdist(wifi_locations, x)
+            
+
 
     def guide(self, annealing_factor=1.0):
 
@@ -167,30 +144,27 @@ if __name__ == "__main__":
 
     trace = floor.traces[18]
 
-    matrices = trace.matrices
-    wifi = torch.tensor(matrices["wifi"])
-    position = torch.tensor(matrices["position"])
-    time = torch.tensor(matrices["time"])
-
-    height, width = floor.info["map_info"]["height"], floor.info["map_info"]["width"]
-
     model = InitialModel(trace)
+    # model.model()
 
-    from pyro.infer import MCMC, NUTS, HMC, SVI, Trace_ELBO
+    from pyro.infer import MCMC, NUTS, HMC, SVI, Trace_ELBO, JitTrace_ELBO
     from pyro.optim import Adam, ClippedAdam
+
 
     # Reset parameter values
     pyro.clear_param_store()
 
+    model.guide()
+
     # Define the number of optimization steps
-    n_steps = 12000
+    n_steps = 300
 
     # Setup the optimizer
     adam_params = {"lr": 0.01}
     optimizer = ClippedAdam(adam_params)
 
     # Setup the inference algorithm
-    elbo = Trace_ELBO(num_particles=3)
+    elbo = Trace_ELBO(num_particles=1)
     svi = SVI(model.model, model.guide, optimizer, loss=elbo)
 
     # Do gradient steps
