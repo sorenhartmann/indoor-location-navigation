@@ -21,18 +21,25 @@ floor_uniform = dist.Uniform(
 
 
 class BatchedModel(torch.nn.Module):
-    def __init__(self, floor_data, K, n_max=12):
+    def __init__(self, floor_data):
 
         super().__init__()
 
         trace_guides = []
-        for trace in floor_data.traces[:n_max]:
+        K = floor_data.K
 
-            loc_bias = torch.tensor(trace.data["TYPE_WAYPOINT"].iloc[0].values)
+        for trace in floor_data.traces:
+
+            time, position, _ = trace[0]
+
+            pos_is_obs = ~position.isnan().any(-1)
+            loc_bias = position[pos_is_obs].mean(axis=0)
+
             time_min_max = (
-                trace.data["TYPE_WAYPOINT"].index[0].total_seconds(),
-                trace.data["TYPE_WAYPOINT"].index[-1].total_seconds(),
+                time[pos_is_obs][0],
+                time[pos_is_obs][-1],
             )
+
             trace_guides.append(
                 TraceGuide(loc_bias=loc_bias, time_min_max=time_min_max)
             )
@@ -86,7 +93,7 @@ class BatchedModel(torch.nn.Module):
 
             x_0 = sample("x_0", relaxed_floor_dist)
             x = torch.zeros(
-                x_0.shape[:-1] + (T_max,) + x_0.shape[-1:], # Batch dims, time, x/y
+                x_0.shape[:-1] + (T_max,) + x_0.shape[-1:],  # Batch dims, time, x/y
                 dtype=mini_batch_position.dtype,
             )
             x[..., 0, :] = x_0
@@ -149,8 +156,6 @@ class BatchedModel(torch.nn.Module):
             location[i, :length, :] = l
             log_scale[i] = s
 
-   
-
         with pyro.plate("mini_batch", len(mini_batch_index)):
 
             for t in pyro.markov(range(0, T_max)):
@@ -181,62 +186,18 @@ if __name__ == "__main__":
     ).to_event(1)
 
     batch_size = 12
-    traces = [trace for trace in floor.traces[:batch_size]]
+    
+    (
+        mini_batch_index,
+        mini_batch_length,
+        mini_batch_time,
+        mini_batch_position,
+        mini_batch_position_mask,
+        mini_batch_wifi,
+        mini_batch_wifi_mask,
+    ) = floor[torch.arange(batch_size)]
 
-    mini_batch_index = torch.arange(batch_size)
-    mini_batch_length = torch.tensor([len(t.matrices["time"]) for t in traces])
-
-    mini_batch_time = mini_batch_time = pad_sequence(
-        [torch.tensor(t.matrices["time"], dtype=torch.float32) for t in traces],
-        batch_first=True,
-    )
-    mini_batch_position = pad_sequence(
-        [torch.tensor(t.matrices["position"], dtype=torch.float32) for t in traces],
-        batch_first=True,
-    )
-    mini_batch_position_mask = ~mini_batch_position.isnan().any(dim=-1)
-    for i, length in enumerate(mini_batch_length):
-        mini_batch_position_mask[i, length:] = False
-    mini_batch_position[~mini_batch_position_mask] = 0
-
-    bssids = set()
-    for t in traces:
-        bssids.update(set(t.data["TYPE_WIFI"]["bssid"].unique()))
-
-    mini_batch_wifi_unpadded = []
-    for t in traces:
-        wifi = t._get_matrices(bssids=bssids)["wifi"]
-        mini_batch_wifi_unpadded.append(torch.tensor(wifi, dtype=torch.float32))
-
-    mini_batch_wifi = pad_sequence(mini_batch_wifi_unpadded, batch_first=True)
-    mini_batch_wifi_mask = ~mini_batch_wifi.isnan()
-    for i, length in enumerate(mini_batch_length):
-        mini_batch_wifi_mask[i, length:, :] = False
-    mini_batch_wifi[~mini_batch_wifi_mask] = 0
-
-    _, T, K = mini_batch_wifi.shape
-
-    model = BatchedModel(floor, K)
-
-    # model.model(
-    #     mini_batch_index=mini_batch_index,
-    #     mini_batch_length=mini_batch_length,
-    #     mini_batch_time=mini_batch_time,
-    #     mini_batch_position=mini_batch_position,
-    #     mini_batch_position_mask=mini_batch_position_mask,
-    #     mini_batch_wifi=mini_batch_wifi,
-    #     mini_batch_wifi_mask=mini_batch_wifi_mask,
-    # )
-
-    # model.guide(
-    #     mini_batch_index=mini_batch_index,
-    #     mini_batch_length=mini_batch_length,
-    #     mini_batch_time=mini_batch_time,
-    #     mini_batch_position=mini_batch_position,
-    #     mini_batch_position_mask=mini_batch_position_mask,
-    #     mini_batch_wifi=mini_batch_wifi,
-    #     mini_batch_wifi_mask=mini_batch_wifi_mask,
-    # )
+    model = BatchedModel(floor)
 
     from pyro.infer import MCMC, NUTS, HMC, SVI, Trace_ELBO
     from pyro.optim import Adam, ClippedAdam

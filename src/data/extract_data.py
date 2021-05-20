@@ -104,6 +104,7 @@ def get_file_tree():
                 .tolist()
             )
 
+    cached_file.parent.mkdir(parents=True, exist_ok=True)
     with open(cached_file, "wb") as f:
         pickle.dump(file_tree, f)
 
@@ -156,7 +157,9 @@ def get_trace_data(trace_path):
 
         with file_path.open("r") as f:
             first_line = next(f)
-            start_time = int(re.search("(\d+)", first_line.decode()).group(0))
+            if first_line is bytes:
+                first_line = first_line.decode()
+            start_time = int(re.search("(\d+)", first_line).group(0))
             raw = pd.read_csv(f, comment="#", header=None)
 
     observations = fix_newlines(raw[0])
