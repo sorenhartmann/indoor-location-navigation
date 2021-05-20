@@ -14,6 +14,8 @@ from contextlib import ExitStack
 import functools
 from tqdm import tqdm
 import jax.numpy as jnp
+from torch.utils.data.sampler import BatchSampler, RandomSampler
+from torch.utils.data import DataLoader
 
 project_dir = Path(__file__).resolve().parents[2]
 
@@ -21,6 +23,17 @@ raw_path = project_dir / "data" / "raw"
 interim_path = project_dir / "data" / "interim"
 processed_path = project_dir / "data" / "processed"
 
+# def get_loader(dataset, batch_size, pin_memory=False):
+
+#     sampler = BatchSampler(
+#         RandomSampler(dataset), batch_size=batch_size, drop_last=False
+#     )
+#     return DataLoader(
+#         dataset,
+#         batch_size=None,
+#         sampler=sampler,
+#         pin_memory=pin_memory,
+#     )
 
 @dataclass
 class TestDataset:
@@ -82,48 +95,6 @@ class FloorDataset:
         for trace in tqdm(self.traces):
             trace.data
 
-    
-    def _get_matrices(self, ms=100):
-
-        data = self._get_data(cache=False)
-
-        position = data["TYPE_WAYPOINT"]
-        position = position.rename(columns=lambda x: f"pos:{x}")
-
-        wifi = data["TYPE_WIFI"]
-
-        def _apply(group):
-            bssid = group["bssid"].iloc[0]
-            return pd.Series(group["rssi"], name=f"wifi:{bssid}")
-
-        wifi_split = pd.DataFrame()
-        wifi_series = wifi.groupby("bssid").apply(_apply)
-        for bssid in wifi_series.index.get_level_values(0).unique():
-            wifi_split[bssid] = wifi_series[bssid]
-
-        end_point = max(position.index[-1], wifi.index[-1])
-        new_index = pd.timedelta_range(0, end_point, freq=f"{ms}ms")
-        new_index.name = "time"
-        df = pd.DataFrame(index=new_index)
-
-        resampled_data = (
-            df.pipe(pd.merge_ordered, position, "time")
-            .pipe(pd.merge_ordered, wifi_split, "time")
-            .bfill(limit=1)
-            .set_index("time")
-            .loc[new_index]
-        )
-
-        position = jnp.array(resampled_data[position.columns].values)
-        wifi = jnp.array(resampled_data[wifi_split.columns].values)
-
-        return {
-            "position" : position,
-            "wifi" : wifi,
-        }
-
-
-
 @dataclass
 class TraceData:
 
@@ -169,7 +140,7 @@ class TraceData:
 
         return matrices
 
-    def _get_matrices(self, ms=100):
+    def _get_matrices(self, ms=100, bssids=None):
 
         data = self._get_data(cache=False)
 
@@ -184,8 +155,15 @@ class TraceData:
 
         wifi_split = pd.DataFrame()
         wifi_series = wifi.groupby("bssid").apply(_apply)
-        for bssid in wifi_series.index.get_level_values(0).unique():
-            wifi_split[bssid] = wifi_series[bssid]
+
+        if bssids is None:
+            bssids = wifi_series.index.get_level_values(0).unique()
+
+        for bssid in bssids:
+            if bssid in wifi_series:
+                wifi_split[bssid] = wifi_series[bssid]
+            else:
+                wifi_split[bssid] = pd.NA
 
         end_point = max(position.index[-1], wifi.index[-1])
         new_index = pd.timedelta_range(0, end_point, freq=f"{ms}ms")
@@ -209,6 +187,13 @@ class TraceData:
             "wifi" : wifi,
             "time" : time,
         }
+
+    def __len__(self):
+        return len(self.traces)
+
+    def __getitem__(self, indices):
+        values = [self.encoded[i] for i in indices]
+        return pack_sequence(sorted(values, key=lambda x: -len(x)))
 
 
 if __name__ == "__main__":
