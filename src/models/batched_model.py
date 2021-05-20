@@ -19,6 +19,7 @@ floor_uniform = dist.Uniform(
     low=torch.tensor([0.0, 0.0]), high=torch.tensor([height, width])
 ).to_event(1)
 
+
 class BatchedModel(torch.nn.Module):
     def __init__(self, floor_data, K, n_max=12):
 
@@ -81,16 +82,19 @@ class BatchedModel(torch.nn.Module):
         sigma_omega_0 = 10.0  # signal stregth uncertainty
         sigma_omega = 0.1  # How presis is the measured signal stregth
 
-        x = torch.zeros_like(mini_batch_position, dtype=mini_batch_position.dtype)
-
         with pyro.plate("mini_batch", len(mini_batch_index)):
 
-            x[:, 0, :] = sample("x_0", relaxed_floor_dist)
+            x_0 = sample("x_0", relaxed_floor_dist)
+            x = torch.zeros(
+                x_0.shape[:-1] + (T_max,) + x_0.shape[-1:], # Batch dims, time, x/y
+                dtype=mini_batch_position.dtype,
+            )
+            x[..., 0, :] = x_0
 
             for t in pyro.markov(range(1, T_max)):
-                x[:, t, :] = sample(
+                x[..., t, :] = sample(
                     f"x_{t}",
-                    dist.Normal(x[:, t - 1, :], sigma_eps)
+                    dist.Normal(x[..., t - 1, :], sigma_eps)
                     .to_event(1)
                     .mask(t < mini_batch_length),
                 )
@@ -98,7 +102,7 @@ class BatchedModel(torch.nn.Module):
         with pyro.plate("x_observed", mini_batch_position_mask.sum()):
             sample(
                 "x_hat",
-                dist.Normal(x[mini_batch_position_mask], sigma).to_event(1),
+                dist.Normal(x[..., mini_batch_position_mask, :], sigma).to_event(1),
                 obs=mini_batch_position[mini_batch_position_mask],
             )
 
@@ -107,7 +111,7 @@ class BatchedModel(torch.nn.Module):
         with plate("wifis", K):
             omega_0 = sample("omega_0", dist.Normal(mu_omega_0, sigma_omega_0))
             wifi_location = sample("wifi_location", relaxed_floor_dist)
-            distance = torch.cdist(x[any_wifi_is_observed], wifi_location)
+            distance = torch.cdist(x[..., any_wifi_is_observed, :], wifi_location)
             with plate("wifi_is_observed", any_wifi_is_observed.sum()):
                 signal_strength = omega_0 - 2 * torch.log(distance)
                 omega = sample(
@@ -145,28 +149,26 @@ class BatchedModel(torch.nn.Module):
             location[i, :length, :] = l
             log_scale[i] = s
 
-        with pyro.poutine.scale(None, annealing_factor):
+   
 
-            with pyro.plate("mini_batch", len(mini_batch_index)):
+        with pyro.plate("mini_batch", len(mini_batch_index)):
 
-                for t in pyro.markov(range(0, T_max)):
-                    sample(
-                        f"x_{t}",
-                        dist.Normal(location[:, t, :], log_scale.exp().view(-1, 1))
-                        .to_event(1)
-                        .mask(t < mini_batch_length),
-                    )
-
-            with plate("wifis", K):
+            for t in pyro.markov(range(0, T_max)):
                 sample(
-                    "omega_0", dist.Normal(self.mu_q, self.log_sigma_q.exp())
+                    f"x_{t}",
+                    dist.Normal(location[:, t, :], log_scale.exp().view(-1, 1))
+                    .to_event(1)
+                    .mask(t < mini_batch_length),
                 )
-                sample(
-                    "wifi_location",
-                    dist.Normal(
-                        self.wifi_location_q, self.wifi_location_log_sigma_q.exp()
-                    ).to_event(1),
-                )
+
+        with plate("wifis", K):
+            sample("omega_0", dist.Normal(self.mu_q, self.log_sigma_q.exp()))
+            sample(
+                "wifi_location",
+                dist.Normal(
+                    self.wifi_location_q, self.wifi_location_log_sigma_q.exp()
+                ).to_event(1),
+            )
 
 
 if __name__ == "__main__":
@@ -216,22 +218,53 @@ if __name__ == "__main__":
 
     model = BatchedModel(floor, K)
 
-    model.model(
-        mini_batch_index=mini_batch_index,
-        mini_batch_length=mini_batch_length,
-        mini_batch_time=mini_batch_time,
-        mini_batch_position=mini_batch_position,
-        mini_batch_position_mask=mini_batch_position_mask,
-        mini_batch_wifi=mini_batch_wifi,
-        mini_batch_wifi_mask=mini_batch_wifi_mask,
-    )
+    # model.model(
+    #     mini_batch_index=mini_batch_index,
+    #     mini_batch_length=mini_batch_length,
+    #     mini_batch_time=mini_batch_time,
+    #     mini_batch_position=mini_batch_position,
+    #     mini_batch_position_mask=mini_batch_position_mask,
+    #     mini_batch_wifi=mini_batch_wifi,
+    #     mini_batch_wifi_mask=mini_batch_wifi_mask,
+    # )
 
-    model.guide(
-        mini_batch_index=mini_batch_index,
-        mini_batch_length=mini_batch_length,
-        mini_batch_time=mini_batch_time,
-        mini_batch_position=mini_batch_position,
-        mini_batch_position_mask=mini_batch_position_mask,
-        mini_batch_wifi=mini_batch_wifi,
-        mini_batch_wifi_mask=mini_batch_wifi_mask,
-    )
+    # model.guide(
+    #     mini_batch_index=mini_batch_index,
+    #     mini_batch_length=mini_batch_length,
+    #     mini_batch_time=mini_batch_time,
+    #     mini_batch_position=mini_batch_position,
+    #     mini_batch_position_mask=mini_batch_position_mask,
+    #     mini_batch_wifi=mini_batch_wifi,
+    #     mini_batch_wifi_mask=mini_batch_wifi_mask,
+    # )
+
+    from pyro.infer import MCMC, NUTS, HMC, SVI, Trace_ELBO
+    from pyro.optim import Adam, ClippedAdam
+
+    # Reset parameter values
+    pyro.clear_param_store()
+
+    # Define the number of optimization steps
+    n_steps = 1000
+
+    # Setup the optimizer
+    adam_params = {"lr": 0.01}
+    optimizer = Adam(adam_params)
+
+    # # Setup the inference algorithm
+    elbo = Trace_ELBO(num_particles=10, vectorize_particles=True)
+    svi = SVI(model.model, model.guide, optimizer, loss=elbo)
+
+    # Do gradient steps
+    for step in range(n_steps):
+        elbo = svi.step(
+            mini_batch_index=mini_batch_index,
+            mini_batch_length=mini_batch_length,
+            mini_batch_time=mini_batch_time,
+            mini_batch_position=mini_batch_position,
+            mini_batch_position_mask=mini_batch_position_mask,
+            mini_batch_wifi=mini_batch_wifi,
+            mini_batch_wifi_mask=mini_batch_wifi_mask,
+        )
+
+        print("[%d] ELBO: %.1f" % (step, elbo))
