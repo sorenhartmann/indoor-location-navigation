@@ -1,6 +1,8 @@
 from pyro import sample, plate
 
 from scipy.linalg import null_space, lstsq
+from zmq import device
+from pathlib import Path
 
 from src.data.datasets import SiteDataset
 import torch
@@ -12,12 +14,21 @@ from pyro import distributions as dist
 
 from torch.nn.utils.rnn import pad_sequence
 
+if torch.cuda.is_available():
+    device = torch.device("cuda")
+else:
+    device = torch.device("cpu")
+
+project_dir = Path(__file__).resolve().parents[2]
+checkpoint_dir = project_dir / "models" / "checkpoints"
+
 site_data = SiteDataset("5a0546857ecc773753327266")
 floor = site_data.floors[0]
 height, width = floor.info["map_info"]["height"], floor.info["map_info"]["width"]
 floor_uniform = dist.Uniform(
-    low=torch.tensor([0.0, 0.0]), high=torch.tensor([height, width])
-).to_event(1)
+    low=torch.tensor([0.0, 0.0],device=device), high=torch.tensor([height, width],device=device)
+).to_event(1) 
+
 
 
 class BatchedModel(torch.nn.Module):
@@ -81,13 +92,13 @@ class BatchedModel(torch.nn.Module):
         ).to_event(1)
 
         # Normal walking tempo is 1,4 m/s
-        sigma_eps = 0.2  # std [m/100ms]
-        sigma = 0.01  # std of noise measurement [m]
-
+        sigma_eps = torch.tensor(0.2, device=device) # std [m/100ms]
+        sigma = torch.tensor(0.01, device=device) # std of noise measurement [m]
+        
         # Wifi signal strength priors
-        mu_omega_0 = -45.0
-        sigma_omega_0 = 10.0  # signal stregth uncertainty
-        sigma_omega = 0.1  # How presis is the measured signal stregth
+        mu_omega_0 = torch.tensor(-45.0, device=device)
+        sigma_omega_0 = torch.tensor(10.0, device=device) # signal stregth uncertainty
+        sigma_omega = torch.tensor(0.1, device=device) # How presis is the measured signal stregth
 
         with pyro.plate("mini_batch", len(mini_batch_index)):
 
@@ -95,6 +106,7 @@ class BatchedModel(torch.nn.Module):
             x = torch.zeros(
                 x_0.shape[:-1] + (T_max,) + x_0.shape[-1:],  # Batch dims, time, x/y
                 dtype=mini_batch_position.dtype,
+                device=device
             )
             x[..., 0, :] = x_0
 
@@ -146,12 +158,13 @@ class BatchedModel(torch.nn.Module):
         T_max = mini_batch_time.shape[-1]
         K = mini_batch_wifi.shape[-1]
 
-        location = torch.zeros((len(mini_batch_index), T_max, 2))
-        log_scale = torch.zeros((len(mini_batch_index),))
+        location = torch.zeros((len(mini_batch_index), T_max, 2), device = device)
+        log_scale = torch.zeros((len(mini_batch_index),), device = device)
+
 
         for i, (index, length) in enumerate(zip(mini_batch_index, mini_batch_length)):
             l, s = self.trace_guides[index](
-                mini_batch_time[index, :length].unsqueeze(1)
+                mini_batch_time[i, :length].unsqueeze(1)
             )
             location[i, :length, :] = l
             log_scale[i] = s
@@ -177,13 +190,8 @@ class BatchedModel(torch.nn.Module):
 
 
 if __name__ == "__main__":
-
-    site_data = SiteDataset("5a0546857ecc773753327266")
-    floor = site_data.floors[0]
-    height, width = floor.info["map_info"]["height"], floor.info["map_info"]["width"]
-    floor_uniform = dist.Uniform(
-        low=torch.tensor([0.0, 0.0]), high=torch.tensor([height, width])
-    ).to_event(1)
+    if torch.cuda.is_available():
+        torch.cuda.set_device(0)
 
     batch_size = 12
     
@@ -195,9 +203,23 @@ if __name__ == "__main__":
         mini_batch_position_mask,
         mini_batch_wifi,
         mini_batch_wifi_mask,
-    ) = floor[torch.arange(batch_size)]
+    ) = floor[torch.arange(12,24)]
+
+    if torch.cuda.is_available():
+        mini_batch_index = mini_batch_index.to(device)
+        mini_batch_length = mini_batch_length.to(device)
+        mini_batch_time = mini_batch_time.to(device)
+        mini_batch_position = mini_batch_position.to(device)
+        mini_batch_position_mask = mini_batch_position_mask.to(device)
+        mini_batch_wifi = mini_batch_wifi.to(device)
+        mini_batch_wifi_mask = mini_batch_wifi_mask.to(device)
+
 
     model = BatchedModel(floor)
+    if torch.cuda.is_available():
+        model.to(device = torch.device("cuda"))
+
+    #model.load_state_dict(torch.load(checkpoint_dir/f'BatchedModel_iter100.pt'))
 
     from pyro.infer import MCMC, NUTS, HMC, SVI, Trace_ELBO
     from pyro.optim import Adam, ClippedAdam
@@ -227,5 +249,6 @@ if __name__ == "__main__":
             mini_batch_wifi=mini_batch_wifi,
             mini_batch_wifi_mask=mini_batch_wifi_mask,
         )
-
+        if step> 0 and step%100 == 0:
+            torch.save(model.state_dict(), checkpoint_dir/f'BatchedModel_iter{step}.pt')
         print("[%d] ELBO: %.1f" % (step, elbo))
