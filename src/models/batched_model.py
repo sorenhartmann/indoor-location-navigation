@@ -4,13 +4,17 @@ from scipy.linalg import null_space, lstsq
 from zmq import device
 from pathlib import Path
 
-from src.data.datasets import SiteDataset
+from src.data.datasets import SiteDataset,get_loader
 import torch
 import seaborn as sns
 import pyro
 from src.data.datasets import SiteDataset
-from src.models.initial_model import InitialModel, TraceGuide
+from src.models.initial_model import InitialModel
+from src.models.trace_guide import TraceGuide
 from pyro import distributions as dist
+
+from pyro.infer import MCMC, NUTS, HMC, SVI, Trace_ELBO
+from pyro.optim import Adam, ClippedAdam
 
 from torch.nn.utils.rnn import pad_sequence
 
@@ -22,12 +26,6 @@ else:
 project_dir = Path(__file__).resolve().parents[2]
 checkpoint_dir = project_dir / "models" / "checkpoints"
 
-site_data = SiteDataset("5a0546857ecc773753327266")
-floor = site_data.floors[0]
-height, width = floor.info["map_info"]["height"], floor.info["map_info"]["width"]
-floor_uniform = dist.Uniform(
-    low=torch.tensor([0.0, 0.0],device=device), high=torch.tensor([height, width],device=device)
-).to_event(1) 
 
 
 
@@ -93,12 +91,12 @@ class BatchedModel(torch.nn.Module):
 
         # Normal walking tempo is 1,4 m/s
         sigma_eps = torch.tensor(0.2, device=device) # std [m/100ms]
-        sigma = torch.tensor(0.01, device=device) # std of noise measurement [m]
+        sigma = torch.tensor(3, device=device) # std of noise measurement [m]
         
         # Wifi signal strength priors
         mu_omega_0 = torch.tensor(-45.0, device=device)
-        sigma_omega_0 = torch.tensor(10.0, device=device) # signal stregth uncertainty
-        sigma_omega = torch.tensor(0.1, device=device) # How presis is the measured signal stregth
+        sigma_omega_0 = torch.tensor(10.0, device=device) # grundsignal styrke spredning. 
+        sigma_omega = torch.tensor(10., device=device) # How presis is the measured signal stregth
 
         with pyro.plate("mini_batch", len(mini_batch_index)):
 
@@ -188,67 +186,44 @@ class BatchedModel(torch.nn.Module):
                 ).to_event(1),
             )
 
-
 if __name__ == "__main__":
+    site_data = SiteDataset("5a0546857ecc773753327266", wifi_threshold=200, sampling_interval = 200)
+    floor = site_data.floors[0]
+    height, width = floor.info["map_info"]["height"], floor.info["map_info"]["width"]
+    floor_uniform = dist.Uniform(
+        low=torch.tensor([0.0, 0.0],device=device), high=torch.tensor([height, width],device=device)
+    ).to_event(1) 
+
+
+
     if torch.cuda.is_available():
         torch.cuda.set_device(0)
 
-    batch_size = 12
-    
-    (
-        mini_batch_index,
-        mini_batch_length,
-        mini_batch_time,
-        mini_batch_position,
-        mini_batch_position_mask,
-        mini_batch_wifi,
-        mini_batch_wifi_mask,
-    ) = floor[torch.arange(12,24)]
-
-    if torch.cuda.is_available():
-        mini_batch_index = mini_batch_index.to(device)
-        mini_batch_length = mini_batch_length.to(device)
-        mini_batch_time = mini_batch_time.to(device)
-        mini_batch_position = mini_batch_position.to(device)
-        mini_batch_position_mask = mini_batch_position_mask.to(device)
-        mini_batch_wifi = mini_batch_wifi.to(device)
-        mini_batch_wifi_mask = mini_batch_wifi_mask.to(device)
-
-
+    dataloader = get_loader(floor, batch_size = 20)
     model = BatchedModel(floor)
-    if torch.cuda.is_available():
-        model.to(device = torch.device("cuda"))
-
-    #model.load_state_dict(torch.load(checkpoint_dir/f'BatchedModel_iter100.pt'))
-
-    from pyro.infer import MCMC, NUTS, HMC, SVI, Trace_ELBO
-    from pyro.optim import Adam, ClippedAdam
-
+    
     # Reset parameter values
     pyro.clear_param_store()
 
-    # Define the number of optimization steps
-    n_steps = 1000
+    # Define the number of Epochs
+    n_epochs = 2000
 
     # Setup the optimizer
-    adam_params = {"lr": 0.01}
-    optimizer = Adam(adam_params)
+    adam_params = {"lr": 0.0001}
+    optimizer = ClippedAdam(adam_params)
 
     # # Setup the inference algorithm
-    elbo = Trace_ELBO(num_particles=10, vectorize_particles=True)
-    svi = SVI(model.model, model.guide, optimizer, loss=elbo)
-
-    # Do gradient steps
-    for step in range(n_steps):
-        elbo = svi.step(
-            mini_batch_index=mini_batch_index,
-            mini_batch_length=mini_batch_length,
-            mini_batch_time=mini_batch_time,
-            mini_batch_position=mini_batch_position,
-            mini_batch_position_mask=mini_batch_position_mask,
-            mini_batch_wifi=mini_batch_wifi,
-            mini_batch_wifi_mask=mini_batch_wifi_mask,
-        )
-        if step> 0 and step%100 == 0:
-            torch.save(model.state_dict(), checkpoint_dir/f'BatchedModel_iter{step}.pt')
-        print("[%d] ELBO: %.1f" % (step, elbo))
+    svi = SVI(model.model, model.guide, optimizer, loss=Trace_ELBO(num_particles=10, vectorize_particles=True))
+    #if torch.cuda.is_available():
+    #    model.to(device = torch.device("cuda"))
+    mini_batch = floor[torch.arange(0,16)]
+    #with torch.autograd.detect_anomaly():
+    for epoch in range(n_epochs):
+        #elbo = 0
+        #for mini_batch in dataloader:
+        #    print(mini_batch[0])
+        #    elbo = elbo +  svi.step(*mini_batch)
+        elbo = svi.step(*mini_batch)
+        if epoch> 0 and epoch%100 == 0:
+            torch.save(model.state_dict(), checkpoint_dir/f'BatchedModel_single_lr{adam_params["lr"]}_epochs{epoch}.pt')
+        print("epoch[%d] ELBO: %.1f" % (epoch, elbo))
