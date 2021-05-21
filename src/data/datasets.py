@@ -10,6 +10,7 @@ from PIL import Image
 import json
 import torch
 from torch.functional import Tensor
+from collections import Counter
 
 from torch.nn import Module
 from torch.nn.utils.rnn import pad_sequence
@@ -59,12 +60,15 @@ class SiteDataset(Dataset):
 
 
 class FloorDataset(Dataset):
-    def __init__(self, site_id: str, floor_id: str, sampling_interval=100) -> None:
+    def __init__(
+        self, site_id: str, floor_id: str, sampling_interval=100, wifi_threshold=100
+    ) -> None:
 
         self.site_id = site_id
         self.floor_id = floor_id
 
         self.sampling_interval = sampling_interval
+        self.wifi_threshold = wifi_threshold
 
         file_tree = get_file_tree()
         trace_ids = file_tree["train"][self.site_id][self.floor_id]
@@ -154,8 +158,8 @@ class FloorDataset(Dataset):
         if cached_path.exists():
             # with gzip.open(cached_path, "rb") as f:
             #     sampling_interval, bssids, data_tensors_unpadded = pickle.load(f)
-            sampling_interval, bssids, data_tensors_unpadded = torch.load(cached_path)
-            if sampling_interval == self.sampling_interval:
+            data_parameters, bssids, data_tensors_unpadded = torch.load(cached_path)
+            if data_parameters == (self.sampling_interval, self.wifi_threshold):
                 self.bssids_ = bssids
                 return data_tensors_unpadded
 
@@ -172,9 +176,14 @@ class FloorDataset(Dataset):
 
             wifi_unaligned.append((trace.bssids_, wifi))
 
+        bssid_counter = Counter()
+        for bssids_, wifi in wifi_unaligned:
+            bssid_counter.update(dict(zip(bssids_, (~wifi.isnan()).sum(0))))
+
         self.bssids_ = sorted(
-            {bssid for bssids_, _ in wifi_unaligned for bssid in bssids_}
+            i for i, j in bssid_counter.items() if j >= self.wifi_threshold
         )
+
         bssid_to_index = {j: i for i, j in enumerate(self.bssids_)}
 
         wifi_unpadded = []
@@ -182,20 +191,18 @@ class FloorDataset(Dataset):
             wifi_aligned = torch.full(
                 (wifi.shape[0], len(self.bssids_)), float("nan"), dtype=torch.float32
             )
-            wifi_aligned[:, [bssid_to_index[bssid] for bssid in bssids]] = wifi
+            
+            old_index, old_bssid,  = zip(*[(i, bssid) for i, bssid in enumerate(bssids) if bssid in bssid_to_index])
+            new_index = [bssid_to_index[bssid] for bssid in old_bssid]
+   
+            wifi_aligned[:, new_index] = wifi[:, old_index]
             wifi_unpadded.append(wifi_aligned)
 
         data_tensors_unpadded = (time_unpadded, position_unpadded, wifi_unpadded)
 
         cached_path.parent.mkdir(parents=True, exist_ok=True)
-        torch.save(
-            (self.sampling_interval, self.bssids_, data_tensors_unpadded), cached_path
-        )
-        # with gzip.open(cached_path, "wb") as f:
-        #     pickle.dump(
-        #         (self.sampling_interval, self.bssids_, data_tensors_unpadded), f
-        #     )
-
+        data_parameters = (self.sampling_interval, self.wifi_threshold)
+        torch.save((data_parameters, self.bssids_, data_tensors_unpadded), cached_path)
         return data_tensors_unpadded
 
 
@@ -313,14 +320,4 @@ class TraceData:
 
 
 if __name__ == "__main__":
-
-    site_data = SiteDataset("5a0546857ecc773753327266")
-    # site_data.floors[0].traces[0].data
-    # site_data.floors[0].image
-    # site_data.floors[0].extract_traces()
-    print(site_data.floors[0].K)
-    print("hey")
-    site_data.floors[0][torch.arange(16)]
-    print(site_data.floors[0].K)
-    print("hey")
-    print(site_data.floors[0].K)
+    pass
