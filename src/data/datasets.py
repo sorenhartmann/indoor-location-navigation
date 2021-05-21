@@ -3,24 +3,17 @@ import pickle
 import gzip
 from pathlib import Path
 from functools import cached_property
-from dataclasses import dataclass, InitVar
-import re
-from typing import Tuple
+from dataclasses import dataclass
 from PIL import Image
 import json
 import torch
-from torch.functional import Tensor
 from collections import Counter
 
-from torch.nn import Module
 from torch.nn.utils.rnn import pad_sequence
 from src.data.extract_data import RAW_FILE_NAME, get_file_tree, get_trace_data
 import zipfile
 import pandas as pd
-from contextlib import ExitStack
-import functools
 from tqdm import tqdm
-import jax.numpy as jnp
 from torch.utils.data.sampler import BatchSampler, RandomSampler
 from torch.utils.data import DataLoader, Dataset
 
@@ -31,10 +24,10 @@ interim_path = project_dir / "data" / "interim"
 processed_path = project_dir / "data" / "processed"
 
 
-def get_loader(dataset, batch_size, pin_memory=False):
+def get_loader(dataset, batch_size, pin_memory=False, generator=None):
 
     sampler = BatchSampler(
-        RandomSampler(dataset), batch_size=batch_size, drop_last=False
+        RandomSampler(dataset, generator=generator), batch_size=batch_size, drop_last=False
     )
     return DataLoader(
         dataset,
@@ -50,13 +43,13 @@ class TestDataset:
 
 
 class SiteDataset(Dataset):
-    def __init__(self, site_id: str) -> None:
+    def __init__(self, site_id: str, **kwargs) -> None:
 
         self.site_id = site_id
 
         file_tree = get_file_tree()
         floor_ids = file_tree["train"][self.site_id]
-        self.floors = [FloorDataset(self.site_id, floor_id) for floor_id in floor_ids]
+        self.floors = [FloorDataset(self.site_id, floor_id, **kwargs) for floor_id in floor_ids]
 
 
 class FloorDataset(Dataset):
@@ -189,7 +182,7 @@ class FloorDataset(Dataset):
         wifi_unpadded = []
         for bssids, wifi in wifi_unaligned:
             wifi_aligned = torch.full(
-                (wifi.shape[0], len(self.bssids_)), float("nan"), dtype=torch.float32
+                (wifi.shape[0], len(self.bssids_)), float("nan"), dtype=wifi.dtype
             )
             
             old_index, old_bssid,  = zip(*[(i, bssid) for i, bssid in enumerate(bssids) if bssid in bssid_to_index])
@@ -307,9 +300,9 @@ class TraceData:
         wifi = resampled_data[wifi_split.columns].values
 
         data_tensors = (
-            torch.tensor(time, dtype=torch.float32),
-            torch.tensor(position, dtype=torch.float32),
-            torch.tensor(wifi, dtype=torch.float32),
+            torch.tensor(time, dtype=torch.float64),
+            torch.tensor(position, dtype=torch.float64),
+            torch.tensor(wifi, dtype=torch.float64),
         )
 
         cached_path.parent.mkdir(parents=True, exist_ok=True)
