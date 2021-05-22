@@ -6,6 +6,7 @@ from functools import cached_property
 from dataclasses import dataclass
 from PIL import Image
 import json
+from pandas._libs.tslibs import Timedelta
 import torch
 from collections import Counter
 
@@ -27,7 +28,9 @@ processed_path = project_dir / "data" / "processed"
 def get_loader(dataset, batch_size, pin_memory=False, generator=None):
 
     sampler = BatchSampler(
-        RandomSampler(dataset, generator=generator), batch_size=batch_size, drop_last=False
+        RandomSampler(dataset, generator=generator),
+        batch_size=batch_size,
+        drop_last=False,
     )
     return DataLoader(
         dataset,
@@ -49,12 +52,19 @@ class SiteDataset(Dataset):
 
         file_tree = get_file_tree()
         floor_ids = file_tree["train"][self.site_id]
-        self.floors = [FloorDataset(self.site_id, floor_id, **kwargs) for floor_id in floor_ids]
+        self.floors = [
+            FloorDataset(self.site_id, floor_id, **kwargs) for floor_id in floor_ids
+        ]
 
 
 class FloorDataset(Dataset):
     def __init__(
-        self, site_id: str, floor_id: str, sampling_interval=100, wifi_threshold=100
+        self,
+        site_id: str,
+        floor_id: str,
+        sampling_interval=100,
+        wifi_threshold=100,
+        include_beacon=False,
     ) -> None:
 
         self.site_id = site_id
@@ -62,6 +72,8 @@ class FloorDataset(Dataset):
 
         self.sampling_interval = sampling_interval
         self.wifi_threshold = wifi_threshold
+
+        self.include_beacon = include_beacon
 
         file_tree = get_file_tree()
         trace_ids = file_tree["train"][self.site_id][self.floor_id]
@@ -99,7 +111,12 @@ class FloorDataset(Dataset):
 
     def __getitem__(self, indices):
 
-        time_unpadded, position_unpadded, wifi_unpadded = self._generate_tensors()
+        (
+            time_unpadded,
+            position_unpadded,
+            wifi_unpadded,
+            beacon_unpadded,
+        ) = self._generate_tensors()
 
         mini_batch_index = indices
         mini_batch_length = torch.tensor([len(time_unpadded[i]) for i in indices])
@@ -124,7 +141,15 @@ class FloorDataset(Dataset):
             mini_batch_wifi_mask[i, length:, :] = False
         mini_batch_wifi[~mini_batch_wifi_mask] = 0
 
-        return (
+        mini_batch_beacon = pad_sequence(
+            [beacon_unpadded[i] for i in indices], batch_first=True
+        )
+        mini_batch_beacon_mask = ~mini_batch_beacon.isnan()
+        for i, length in enumerate(mini_batch_length):
+            mini_batch_beacon_mask[i, length:, :] = False
+        mini_batch_beacon[~mini_batch_beacon_mask] = 0
+
+        padded_tensors = (
             mini_batch_index,
             mini_batch_length,
             mini_batch_time,
@@ -132,7 +157,14 @@ class FloorDataset(Dataset):
             mini_batch_position_mask,
             mini_batch_wifi,
             mini_batch_wifi_mask,
+            mini_batch_beacon,
+            mini_batch_beacon_mask,
         )
+
+        if self.include_beacon:
+            return padded_tensors
+        else:
+            return padded_tensors[:-2]
 
     @property
     def K(self):
@@ -141,6 +173,14 @@ class FloorDataset(Dataset):
         else:
             self._generate_tensors()
             return len(self.bssids_)
+
+    @property
+    def B(self):
+        if hasattr(self, "beacon_ids_"):
+            return len(self.beacon_ids_)
+        else:
+            self._generate_tensors()
+            return len(self.beacon_ids_)
 
     def _generate_tensors(self):
 
@@ -151,24 +191,30 @@ class FloorDataset(Dataset):
         if cached_path.exists():
             # with gzip.open(cached_path, "rb") as f:
             #     sampling_interval, bssids, data_tensors_unpadded = pickle.load(f)
-            data_parameters, bssids, data_tensors_unpadded = torch.load(cached_path)
+            data_parameters, bssids, beacon_ids, data_tensors_unpadded = torch.load(
+                cached_path
+            )
             if data_parameters == (self.sampling_interval, self.wifi_threshold):
                 self.bssids_ = bssids
+                self.beacon_ids_ = beacon_ids
                 return data_tensors_unpadded
 
         time_unpadded = []
         position_unpadded = []
 
         wifi_unaligned = []
+        beacon_unaligned = []
 
         for trace in tqdm(self.traces):
 
-            time, position, wifi = trace[0]
+            time, position, wifi, beacon = trace[0]
             time_unpadded.append(time)
             position_unpadded.append(position)
 
             wifi_unaligned.append((trace.bssids_, wifi))
+            beacon_unaligned.append((trace.beacon_ids_, beacon))
 
+        ## Aligning floor wide wifi signals
         bssid_counter = Counter()
         for bssids_, wifi in wifi_unaligned:
             bssid_counter.update(dict(zip(bssids_, (~wifi.isnan()).sum(0))))
@@ -184,18 +230,55 @@ class FloorDataset(Dataset):
             wifi_aligned = torch.full(
                 (wifi.shape[0], len(self.bssids_)), float("nan"), dtype=wifi.dtype
             )
-            
-            old_index, old_bssid,  = zip(*[(i, bssid) for i, bssid in enumerate(bssids) if bssid in bssid_to_index])
+
+            old_index, old_bssid, = zip(
+                *[
+                    (i, bssid)
+                    for i, bssid in enumerate(bssids)
+                    if bssid in bssid_to_index
+                ]
+            )
             new_index = [bssid_to_index[bssid] for bssid in old_bssid]
-   
+
             wifi_aligned[:, new_index] = wifi[:, old_index]
             wifi_unpadded.append(wifi_aligned)
 
-        data_tensors_unpadded = (time_unpadded, position_unpadded, wifi_unpadded)
+        ## Aligning floor wide beacon signals
+        self.beacon_ids_ = sorted(
+            set(
+                beacon_id
+                for (beacon_ids, beacon) in beacon_unaligned
+                for beacon_id in beacon_ids
+            )
+        )
+
+        beacon_id_to_index = {j: i for i, j in enumerate(self.beacon_ids_)}
+
+        beacon_unpadded = []
+        for (beacon_ids, beacon) in beacon_unaligned:
+            beacon_aligned = torch.full(
+                (beacon.shape[0], len(self.beacon_ids_)),
+                float("nan"),
+                dtype=beacon.dtype,
+            )
+            beacon_aligned[
+                :, [beacon_id_to_index[beacon_id] for beacon_id in beacon_ids]
+            ] = beacon
+            beacon_unpadded.append(beacon_aligned)
+
+        data_tensors_unpadded = (
+            time_unpadded,
+            position_unpadded,
+            wifi_unpadded,
+            beacon_unpadded,
+        )
 
         cached_path.parent.mkdir(parents=True, exist_ok=True)
         data_parameters = (self.sampling_interval, self.wifi_threshold)
-        torch.save((data_parameters, self.bssids_, data_tensors_unpadded), cached_path)
+        torch.save(
+            (data_parameters, self.bssids_, self.beacon_ids_, data_tensors_unpadded),
+            cached_path,
+        )
         return data_tensors_unpadded
 
 
@@ -252,9 +335,10 @@ class TraceData:
 
         if cached_path.exists():
             with gzip.open(cached_path, "rb") as f:
-                sampling_interval, bssids, data_tensors = pickle.load(f)
-            if sampling_interval == self.sampling_interval:
+                sampling_interval, bssids, beacon_ids, data_tensors = pickle.load(f)
+            if self.sampling_interval == sampling_interval:
                 self.bssids_ = bssids
+                self.beacon_ids_ = beacon_ids
                 return data_tensors
 
         data_frames = self._get_zipped_data(cache=False)
@@ -268,8 +352,11 @@ class TraceData:
             bssid = group["bssid"].iloc[0]
             return pd.Series(group["rssi"], name=f"wifi:{bssid}")
 
-        wifi_split = pd.DataFrame()
         wifi_grouped = wifi_df.groupby("bssid").apply(_apply)
+
+        wifi_timestamps = sorted(wifi_grouped.index.get_level_values(1).unique())
+        wifi_split = pd.DataFrame(index=wifi_timestamps)
+        wifi_split.index.name = "time"
 
         self.bssids_ = wifi_grouped.index.get_level_values(0).unique().to_list()
         for bssid in self.bssids_:
@@ -280,9 +367,57 @@ class TraceData:
                 wifi_split[bssid] = wifi_grouped[bssid][
                     ~wifi_grouped[bssid].index.duplicated()
                 ]
-                pass
 
-        end_time = max(position_df.index[-1], wifi_df.index[-1])
+        beacon_df = data_frames.get("TYPE_BEACON")
+
+        if beacon_df is not None:
+
+            def _apply(group):
+                beacon_id = group["uuid"].iloc[0]
+                return pd.Series(group["distance"], name=f"beacon:{beacon_id}")
+
+            beacon_grouped = beacon_df.groupby("uuid").apply(_apply)
+
+        if beacon_df is None:
+            self.beacon_ids_ = []
+            beacon_split = pd.DataFrame()
+            beacon_split.index.name = "time"
+
+        elif (
+            hasattr(beacon_grouped, "columns") and beacon_grouped.columns.name == "time"
+        ):
+            # Fix for only one beacon
+            beacon_timestamps = sorted(beacon_grouped.columns)
+            beacon_split = pd.DataFrame(index=beacon_timestamps)
+            beacon_split.index.name = "time"
+            beacon_split[beacon_grouped.index[0]] = beacon_grouped.values.flatten()
+
+            self.beacon_ids_ = [beacon_grouped.index[0]]
+        else:
+            beacon_timestamps = sorted(
+                beacon_grouped.index.get_level_values(1).unique()
+            )
+            beacon_split = pd.DataFrame(index=beacon_timestamps)
+            beacon_split.index.name = "time"
+
+            self.beacon_ids_ = (
+                beacon_grouped.index.get_level_values(0).unique().to_list()
+            )
+
+            for i, beacon_id in enumerate(self.beacon_ids_):
+                try:
+                    beacon_split[beacon_id] = beacon_grouped[beacon_id]
+                except ValueError:
+                    # Sometimes more than one observation per time
+                    beacon_split[beacon_id] = beacon_grouped[beacon_id][
+                        ~beacon_grouped[beacon_id].index.duplicated()
+                    ]
+
+        end_time = max(
+            position_df.index[-1],
+            wifi_df.index[-1],
+            beacon_split.index[-1] if len(beacon_split.index) > 0 else pd.Timedelta(0),
+        )
         new_index = pd.timedelta_range(0, end_time, freq=f"{self.sampling_interval}ms")
         new_index.name = "time"
 
@@ -290,6 +425,7 @@ class TraceData:
             pd.DataFrame(index=new_index)
             .pipe(pd.merge_ordered, position_df, "time")
             .pipe(pd.merge_ordered, wifi_split, "time")
+            .pipe(pd.merge_ordered, beacon_split, "time")
             .bfill(limit=1)
             .set_index("time")
             .loc[new_index]
@@ -298,19 +434,32 @@ class TraceData:
         time = resampled_data.index.total_seconds()
         position = resampled_data[position_df.columns].values
         wifi = resampled_data[wifi_split.columns].values
+        beacon = resampled_data[beacon_split.columns].values
 
         data_tensors = (
             torch.tensor(time, dtype=torch.float64),
             torch.tensor(position, dtype=torch.float64),
             torch.tensor(wifi, dtype=torch.float64),
+            torch.tensor(beacon, dtype=torch.float64),
         )
 
         cached_path.parent.mkdir(parents=True, exist_ok=True)
         with gzip.open(cached_path, "wb") as f:
-            pickle.dump((self.sampling_interval, self.bssids_, data_tensors), f)
+            pickle.dump(
+                (self.sampling_interval, self.bssids_, self.beacon_ids_, data_tensors),
+                f,
+            )
 
         return data_tensors
 
 
 if __name__ == "__main__":
-    pass
+
+    site_id = "5a0546857ecc773753327266"
+    floor_id = "F1"
+
+    floor_data = FloorDataset(
+        site_id, floor_id, wifi_threshold=200, sampling_interval=100
+    )
+
+    floor_data[[1, 2, 3, 4]]
