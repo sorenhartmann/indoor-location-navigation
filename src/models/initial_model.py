@@ -1,226 +1,225 @@
-
+from src.models.model_trainer import ModelTrainer
+from src.data.datasets import SiteDataset
+from src.utils import object_to_markdown
 from pyro import sample, plate
 
+from zmq import device
 
-from scipy.linalg import null_space, lstsq
-from torch.nn.modules import Linear, Module, Softplus, ReLU, Sigmoid
-from torch.nn.modules.container import Sequential
-
-from src.data.datasets import SiteDataset
 import torch
-from torch.distributions import constraints
-import seaborn as sns
 import pyro
-from src.data.datasets import SiteDataset
+from src.models.trace_guide import TraceGuide
 from pyro import distributions as dist
 
-site_data = SiteDataset("5a0546857ecc773753327266")
-floor = site_data.floors[0]
-height, width = floor.info["map_info"]["height"], floor.info["map_info"]["width"]
-floor_uniform = dist.Uniform(
-    low=torch.tensor([0.0, 0.0]), high=torch.tensor([height, width])
-).to_event(1)
+if torch.cuda.is_available():
+    device = torch.device("cuda")
+else:
+    device = torch.device("cpu")
 
-class TraceGuide(Module):
-    def __init__(self, layer_sizes=None, loc_bias=None, time_min_max=None):
-
-        super().__init__()
-
-        if layer_sizes is None:
-            layer_sizes = [10]
-
-        layers_x = []
-        layers_y = []
-
-        in_size = 1
-        for out_size in layer_sizes:
-            layers_x.append(Linear(in_size, out_size))
-            layers_y.append(Linear(in_size, out_size))
-            layers_x.append(Softplus(beta=1.))
-            layers_y.append(Softplus(beta=1.))
-            in_size = out_size
-
-        layers_x.append(Linear(in_size, 1))
-        layers_y.append(Linear(in_size, 1))
-
-        if loc_bias is not None:
-            layers_x[-1].bias = torch.nn.Parameter(loc_bias[0])
-            layers_y[-1].bias = torch.nn.Parameter(loc_bias[1])
-
-        if time_min_max is not None:
-            linspace = torch.linspace(time_min_max[0], time_min_max[1], layer_sizes[0])
-            layers_x[0].bias = torch.nn.Parameter(-linspace)
-            layers_y[0].bias = torch.nn.Parameter(-linspace)
-            layers_x[0].weight = torch.nn.Parameter(torch.ones_like(layers_x[0].weight))
-            layers_y[0].weight = torch.nn.Parameter(torch.ones_like(layers_x[0].weight))
-            layers_x[0].weight.requires_grad = False
-            layers_y[0].weight.requires_grad = False
-
-        self._forward_x = Sequential(*layers_x)
-        self._forward_y = Sequential(*layers_y)
-
-        self.register_parameter("log_scale", torch.nn.Parameter(torch.tensor(0.)))
-
-    def forward(self, x):
-
-        location = torch.cat([self._forward_x(x), self._forward_y(x)], dim=1)
-        scale = self.log_scale.exp()
-
-        return location, scale
 
 class InitialModel(torch.nn.Module):
-
-    def __init__(self, trace_data):
+    def __init__(self, floor_data):
 
         super().__init__()
 
-        matrices = trace_data.matrices
-
-        self.position = torch.tensor(matrices["position"], dtype=torch.float32)
-        self.wifi = torch.tensor(matrices["wifi"], dtype=torch.float32)
-        self.time = torch.tensor(matrices["time"], dtype=torch.float32)
-
-        self.T = self.wifi.shape[0]
-        self.K = self.wifi.shape[1]
-
-        self.position_is_observed = (
-            (~torch.isnan(self.position[:, 0])).nonzero().flatten()
+        height, width = (
+            floor_data.info["map_info"]["height"],
+            floor_data.info["map_info"]["width"],
         )
-        self.position_is_missing = (
-            (torch.isnan(self.position[:, 0])).nonzero().flatten()
-        )
+        self.floor_uniform = dist.Uniform(
+            low=torch.tensor([0.0, 0.0], dtype=torch.float64),
+            high=torch.tensor([height, width], dtype=torch.float64),
+        ).to_event(1)
 
-        self.wifi_mask = ~torch.isnan(self.wifi)
-        self.wifi_is_observed = self.wifi_mask.any(axis=1)
+        trace_guides = []
+        K = floor_data.K
 
-        self.wifi[~self.wifi_mask] = 0.
+        for trace in floor_data.traces:
 
-        self.trace_guide = TraceGuide(
-            loc_bias=self.position[0],
-            time_min_max = (self.time[0], self.time[-1]),
+            time, position, _ = trace[0]
+
+            pos_is_obs = ~position.isnan().any(-1)
+            loc_bias = position[pos_is_obs].mean(axis=0)
+
+            time_min_max = (
+                time[pos_is_obs][0],
+                time[pos_is_obs][-1],
             )
 
-        self.register_parameter("mu_q", torch.nn.Parameter(torch.full((self.K,), -45.)))
-        self.register_parameter("log_sigma_q", torch.nn.Parameter(torch.full((self.K,), 0.)))
-        self.register_parameter("wifi_location_q", torch.nn.Parameter(torch.tile(floor_uniform.mean, (self.K, 1))))
-        self.register_parameter("wifi_location_log_sigma_q", torch.nn.Parameter(torch.full((self.K, 2), 0.)))
+            trace_guides.append(
+                TraceGuide(loc_bias=loc_bias, time_min_max=time_min_max)
+            )
 
+        self.trace_guides = torch.nn.ModuleList(trace_guides)
+        self.trace_guides.to(dtype=torch.float32)
 
-    def model(self, annealing_factor=1.):
+        self.register_parameter("mu_q", torch.nn.Parameter(torch.full((K,), -45.0)))
+        self.register_parameter(
+            "log_sigma_q", torch.nn.Parameter(torch.full((K,), 0.0))
+        )
+        self.register_parameter(
+            "wifi_location_q",
+            torch.nn.Parameter(torch.tile(self.floor_uniform.mean, (K, 1))),
+        )
+        self.register_parameter(
+            "wifi_location_log_sigma_q", torch.nn.Parameter(torch.full((K, 2), 0.0))
+        )
+
+        self.to(dtype=torch.float64)
+
+    def model(
+        self,
+        mini_batch_index,
+        mini_batch_length,
+        mini_batch_time,
+        mini_batch_position,
+        mini_batch_position_mask,
+        mini_batch_wifi,
+        mini_batch_wifi_mask,
+        annealing_factor=1.0,
+    ):
 
         pyro.module("initial_model", self)
 
+        T_max = mini_batch_time.shape[-1]
+        K = mini_batch_wifi.shape[-1]
+
         relaxed_floor_dist = dist.Normal(
-            floor_uniform.mean,
-            floor_uniform.stddev
+            self.floor_uniform.mean, self.floor_uniform.stddev
         ).to_event(1)
 
         # Normal walking tempo is 1,4 m/s
-        sigma_eps = 0.2 #std [m/100ms]  
-        sigma = 0.01 #std of noise measurement [m] 
+        sigma_eps = torch.tensor(0.2, device=device)  # std [m/100ms]
+        sigma = torch.tensor(3, device=device)  # std of noise measurement [m]
 
-        #Wifi signal strength priors
-        mu_omega_0 = -45
-        sigma_omega_0 = 10 # signal stregth uncertainty
-        sigma_omega = 0.1 #How presis is the measured signal stregth
+        # Wifi signal strength priors
+        mu_omega_0 = torch.tensor(-45.0, device=device)
+        sigma_omega_0 = torch.tensor(
+            10.0, device=device
+        )  # grundsignal styrke spredning.
+        sigma_omega = torch.tensor(
+            5.0, device=device
+        )  # How accurate is the measured signal stregth
 
-        x = torch.zeros((self.T, 2))
-        x[0, :] = sample("x_0", relaxed_floor_dist)
+        with pyro.plate("mini_batch", len(mini_batch_index)):
 
-        for t in pyro.markov(range(1, self.T)):
-            x[t, :] = sample(f"x_{t}", dist.Normal(x[t - 1], sigma_eps).to_event(1))
-
-        with pyro.plate("x_observed", len(self.position_is_observed)):
-            sample(
-                "x_hat",
-                dist.Normal(x[self.position_is_observed], sigma).to_event(1),
-                obs=self.position[self.position_is_observed],
+            x_0 = sample("x_0", relaxed_floor_dist)
+            x = torch.zeros(
+                x_0.shape[:-1] + (T_max,) + x_0.shape[-1:],  # Batch dims, time, x/y
+                dtype=mini_batch_position.dtype,
+                device=device,
             )
+            x[..., 0, :] = x_0
 
-        with plate("wifis", self.K):
-            omega_0 = sample("omega_0", dist.Normal(mu_omega_0, sigma_omega_0))
-            wifi_location = sample("wifi_location", relaxed_floor_dist)
-            distance = torch.cdist(x[self.wifi_is_observed], wifi_location)
-            with plate("wifi_is_observed", sum(self.wifi_is_observed)):
-                signal_strength= omega_0 - 2*torch.log(distance)
-                omega = sample(
-                    "omega",
-                    dist.Normal(signal_strength, sigma_omega).mask(self.wifi_mask[self.wifi_is_observed, :]),
-                    obs=self.wifi[self.wifi_is_observed, :]
+            for t in pyro.markov(range(1, T_max)):
+                x[..., t, :] = sample(
+                    f"x_{t}",
+                    dist.Normal(x[..., t - 1, :], sigma_eps)
+                    .to_event(1)
+                    .mask(t < mini_batch_length),
                 )
 
+        with pyro.plate("x_observed", mini_batch_position_mask.sum()):
+            sample(
+                "x_hat",
+                dist.Normal(x[..., mini_batch_position_mask, :], sigma).to_event(1),
+                obs=mini_batch_position[mini_batch_position_mask],
+            )
 
-        # with plate("wifis", self.K) as ind:
-        #     omega_0 = sample("omega_0", dist.Normal(mu_omega_0, sigma_omega_0).to_event(0))
-        #     self.wifi_location = sample("wifi_location", floor_uniform)
-        
-        # distance = torch.cdist(x,self.wifi_location, p=2) 
-        # signal_strength= omega_0 - 2*torch.log(distance)
+        any_wifi_is_observed = mini_batch_wifi_mask.any(dim=-1)
 
-        # omega = sample(
-        #     name="omega",
-        #     fn=dist.Normal(loc=signal_strength[self.wifi_is_observed], scale=sigma_omega).to_event(1),
-        #     obs=self.wifi[self.wifi_is_observed]
-        # )
+        with plate("wifis", K):
+            omega_0 = sample("omega_0", dist.Normal(mu_omega_0, sigma_omega_0))
+            wifi_location = sample("wifi_location", relaxed_floor_dist)
+            distance = torch.cdist(x[..., any_wifi_is_observed, :], wifi_location)
+            with plate("wifi_is_observed", any_wifi_is_observed.sum()):
+                signal_strength = omega_0 - 2 * torch.log(distance)
+                omega = sample(
+                    "omega",
+                    dist.Normal(signal_strength, sigma_omega).mask(
+                        mini_batch_wifi_mask[any_wifi_is_observed]
+                    ),
+                    obs=mini_batch_wifi[any_wifi_is_observed],
+                )
 
-    def guide(self, annealing_factor=1.0):
+        return x, wifi_location
+
+    def guide(
+        self,
+        mini_batch_index,
+        mini_batch_length,
+        mini_batch_time,
+        mini_batch_position,
+        mini_batch_position_mask,
+        mini_batch_wifi,
+        mini_batch_wifi_mask,
+        annealing_factor=1.0,
+    ):
 
         pyro.module("initial_model", self)
 
-        location, scale = self.trace_guide(self.time.view(-1, 1))
+        T_max = mini_batch_time.shape[-1]
+        K = mini_batch_wifi.shape[-1]
 
-        with pyro.poutine.scale(None, annealing_factor):
-            for t in pyro.markov(range(0, self.T)):
+        location = torch.zeros((len(mini_batch_index), T_max, 2), device=device)
+        scale = torch.zeros((len(mini_batch_index),), device=device)
+
+        for i, (index, length) in enumerate(zip(mini_batch_index, mini_batch_length)):
+            l, s = self.trace_guides[index](mini_batch_time[i, :length].unsqueeze(1))
+            location[i, :length, :] = l
+            scale[i] = s
+
+        with pyro.plate("mini_batch", len(mini_batch_index)):
+
+            for t in pyro.markov(range(0, T_max)):
                 sample(
                     f"x_{t}",
-                    dist.Normal(location[t, :], scale).to_event(1),
+                    dist.Normal(location[:, t, :], scale.view(-1, 1))
+                    .to_event(1)
+                    .mask(t < mini_batch_length),
                 )
 
-        with plate("wifis", self.K):
-            omega_0 = sample("omega_0", dist.Normal(self.mu_q, self.log_sigma_q.exp()))
-            wifi_location = sample(
-                "wifi_location", 
-                dist.Normal(self.wifi_location_q, self.wifi_location_log_sigma_q.exp()).to_event(1)
+        with plate("wifis", K):
+            sample("omega_0", dist.Normal(self.mu_q, self.log_sigma_q.exp()))
+            sample(
+                "wifi_location",
+                dist.Normal(
+                    self.wifi_location_q, self.wifi_location_log_sigma_q.exp()
+                ).to_event(1),
             )
 
-        # with plate("wifis", self.K):
-        #     omega_0 = sample("omega_0", dist.Normal(-mu_q, sigma_q))
-        #     self.loc = pyro.param("loc",lambda: torch.full((self.K, 2), 50, dtype = torch.float32),event_dim=1)
-        #     #loc2 = pyro.param("loc2",event_dim=1)
-        #     #cov = pyro.param("cov",lambda: torch.full((self.K,2), 0.01),
-        #     #             constraint=constraints.positive)
 
-        #     self.wifi_location = sample("wifi_location", dist.MultivariateNormal(self.loc, torch.tensor([[0.5,0],[0,0.5]])))
+def train_model():
+
+    torch.manual_seed(123456789)
+
+    # Load data
+    site_data = SiteDataset(
+        "5a0546857ecc773753327266", wifi_threshold=200, sampling_interval=100
+    )
+    floor = site_data.floors[0]
+
+    # Setup model
+    model = InitialModel(floor)
+
+    # Setup the optimizer
+    adam_params = {"lr": 1e-2}  # ., "betas":(0.95, 0.999)}
+    optimizer = torch.optim.Adam(model.parameters(), **adam_params)
+
+    # Setup model training
+    n_epochs = 2000
+    batch_size = 16
+    mt = ModelTrainer(
+        model_label="initial_model",
+        model=model,
+        optimizer=optimizer,
+        n_epochs=n_epochs,
+        batch_size=batch_size,
+    )
+
+    # Train the model
+    mt.train(floor)
+
 
 if __name__ == "__main__":
 
-    trace = floor.traces[18]
-
-    model = InitialModel(trace)
-    model.model()
-
-    from pyro.infer import MCMC, NUTS, HMC, SVI, Trace_ELBO, JitTrace_ELBO
-    from pyro.optim import Adam, ClippedAdam
-
-
-    # Reset parameter values
-    pyro.clear_param_store()
-
-    model.guide()
-
-    # Define the number of optimization steps
-    n_steps = 300
-
-    # Setup the optimizer
-    adam_params = {"lr": 0.01}
-    optimizer = ClippedAdam(adam_params)
-
-    # Setup the inference algorithm
-    elbo = Trace_ELBO(num_particles=4)
-    svi = SVI(model.model, model.guide, optimizer, loss=elbo)
-
-    # Do gradient steps
-    for step in range(n_steps):
-        elbo = svi.step()
-
-        print("[%d] ELBO: %.1f" % (step, elbo))
+    train_model()
