@@ -1,3 +1,4 @@
+import functools
 from io import BytesIO
 import pickle
 import gzip
@@ -9,6 +10,8 @@ import json
 from pandas._libs.tslibs import Timedelta
 import torch
 from collections import Counter
+import functools
+import random
 
 from torch.nn.utils.rnn import pad_sequence
 from src.data.extract_data import RAW_FILE_NAME, get_file_tree, get_trace_data
@@ -19,7 +22,7 @@ from torch.utils.data.sampler import BatchSampler, RandomSampler
 from torch.utils.data import DataLoader, Dataset
 
 project_dir = Path(__file__).resolve().parents[2]
-#project_dir = Path("/work3/s164221")
+# project_dir = Path("/work3/s164221")
 
 raw_path = project_dir / "data" / "raw"
 interim_path = project_dir / "data" / "interim"
@@ -65,7 +68,11 @@ class FloorDataset(Dataset):
         floor_id: str,
         sampling_interval=100,
         wifi_threshold=100,
+        include_wifi=True,
         include_beacon=False,
+        validation_percent=None,
+        test_percent=None,
+        split_seed=123,
     ) -> None:
 
         self.site_id = site_id
@@ -74,6 +81,7 @@ class FloorDataset(Dataset):
         self.sampling_interval = sampling_interval
         self.wifi_threshold = wifi_threshold
 
+        self.include_wifi = include_wifi
         self.include_beacon = include_beacon
 
         file_tree = get_file_tree()
@@ -83,6 +91,32 @@ class FloorDataset(Dataset):
             TraceData(self.site_id, self.floor_id, trace_id, sampling_interval)
             for trace_id in trace_ids
         ]
+
+        # ---- TEST TRAIN SPLIT -----
+        
+        trace_indices = set(range(len(self.traces)))
+        self.validation_mask = torch.full((len(self.traces),), False)
+        self.test_mask = torch.full((len(self.traces),), False)
+
+        if validation_percent is not None and test_percent is not None:
+            random.seed(split_seed)
+
+        if validation_percent is not None:
+            validation_indices = random.choices(
+                list(trace_indices), k=int(len(self.traces) * validation_percent)
+            )
+            trace_indices.difference_update(validation_indices)
+            self.validation_mask[validation_indices] = True
+
+        if test_percent is not None:
+            test_indices = random.choices(
+                list(trace_indices), k=int(len(self.traces) * test_percent)
+            )
+            trace_indices.difference_update(test_indices)
+            self.test_mask[test_indices] = True
+
+        
+
 
     @cached_property
     def image(self):
@@ -132,40 +166,47 @@ class FloorDataset(Dataset):
         mini_batch_position_mask = ~mini_batch_position.isnan().any(dim=-1)
         for i, length in enumerate(mini_batch_length):
             mini_batch_position_mask[i, length:] = False
+
+        mini_batch_validation_mask = self.validation_mask[mini_batch_index]
+        mini_batch_test_mask = self.test_mask[mini_batch_index]
+
+        mini_batch_position_mask[mini_batch_validation_mask, :] = False
+        mini_batch_position_mask[mini_batch_test_mask, :] = False
+
         mini_batch_position[~mini_batch_position_mask] = 0
 
-        mini_batch_wifi = pad_sequence(
-            [wifi_unpadded[i] for i in indices], batch_first=True
-        )
-        mini_batch_wifi_mask = ~mini_batch_wifi.isnan()
-        for i, length in enumerate(mini_batch_length):
-            mini_batch_wifi_mask[i, length:, :] = False
-        mini_batch_wifi[~mini_batch_wifi_mask] = 0
-
-        mini_batch_beacon = pad_sequence(
-            [beacon_unpadded[i] for i in indices], batch_first=True
-        )
-        mini_batch_beacon_mask = ~mini_batch_beacon.isnan()
-        for i, length in enumerate(mini_batch_length):
-            mini_batch_beacon_mask[i, length:, :] = False
-        mini_batch_beacon[~mini_batch_beacon_mask] = 0
-
-        padded_tensors = (
+        out_tensors = [
             mini_batch_index,
             mini_batch_length,
             mini_batch_time,
             mini_batch_position,
             mini_batch_position_mask,
-            mini_batch_wifi,
-            mini_batch_wifi_mask,
-            mini_batch_beacon,
-            mini_batch_beacon_mask,
-        )
+        ]
+
+        if self.include_wifi:
+
+            mini_batch_wifi = pad_sequence(
+                [wifi_unpadded[i] for i in indices], batch_first=True
+            )
+            mini_batch_wifi_mask = ~mini_batch_wifi.isnan()
+            for i, length in enumerate(mini_batch_length):
+                mini_batch_wifi_mask[i, length:, :] = False
+            mini_batch_wifi[~mini_batch_wifi_mask] = 0
+
+            out_tensors.extend([mini_batch_wifi, mini_batch_wifi_mask])
 
         if self.include_beacon:
-            return padded_tensors
-        else:
-            return padded_tensors[:-2]
+            mini_batch_beacon = pad_sequence(
+                [beacon_unpadded[i] for i in indices], batch_first=True
+            )
+            mini_batch_beacon_mask = ~mini_batch_beacon.isnan()
+            for i, length in enumerate(mini_batch_length):
+                mini_batch_beacon_mask[i, length:, :] = False
+            mini_batch_beacon[~mini_batch_beacon_mask] = 0
+
+            out_tensors.extend([mini_batch_beacon, mini_batch_beacon_mask])
+
+        return out_tensors
 
     @property
     def K(self):
@@ -347,6 +388,8 @@ class TraceData:
         position_df = data_frames["TYPE_WAYPOINT"]
         position_df = position_df.rename(columns=lambda x: f"pos:{x}")
 
+        # ---- WIFI ----
+
         wifi_df = data_frames["TYPE_WIFI"]
 
         def _apply(group):
@@ -369,6 +412,7 @@ class TraceData:
                     ~wifi_grouped[bssid].index.duplicated()
                 ]
 
+        # ---- Beacons ----
         beacon_df = data_frames.get("TYPE_BEACON")
 
         if beacon_df is not None:
@@ -460,7 +504,12 @@ if __name__ == "__main__":
     floor_id = "F1"
 
     floor_data = FloorDataset(
-        site_id, floor_id, wifi_threshold=200, sampling_interval=100
+        site_id,
+        floor_id,
+        wifi_threshold=200,
+        sampling_interval=100,
+        validation_percent=0.2,
+        test_percent=0.1,
     )
 
     floor_data[[1, 2, 3, 4]]

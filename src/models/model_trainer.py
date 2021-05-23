@@ -1,11 +1,36 @@
+from time import time
 import pyro
 import torch
 from pyro.infer import Trace_ELBO
 from src.data.datasets import get_loader
 from pathlib import Path
+from tqdm import tqdm
 
 project_dir = Path(__file__).resolve().parents[2]
 checkpoint_dir = project_dir / "checkpoints"
+
+
+class BetaFunction:
+    def __init__(self, beta_0, n_epochs, start=0.25, end=0.75) -> None:
+
+        self.beta_0 = beta_0
+        self.n_epochs = n_epochs
+        self.start = start * n_epochs
+        self.end = end * n_epochs
+
+        self.a = 2 * (1 - beta_0) / self.n_epochs
+        self.b = beta_0 - self.a * self.n_epochs / 4
+
+        self.elbo_valid_after = self.end
+
+    def __call__(self, i):
+
+        if i < self.start:
+            return self.beta_0
+        elif i >= self.start and i < self.end:
+            return self.a * i + self.b
+        else:
+            return 1
 
 
 class ModelTrainer:
@@ -16,7 +41,9 @@ class ModelTrainer:
         model_label=None,
         n_epochs=1000,
         batch_size=16,
+        beta_0=1.0,
         save_every=5,
+        verbosity=1,
     ):
 
         self.model_label = model_label
@@ -25,8 +52,12 @@ class ModelTrainer:
         self.optimizer = optimizer
         self.n_epochs = n_epochs
         self.batch_size = batch_size
+        self.beta_0 = beta_0
+        self.beta_function = BetaFunction(self.beta_0, self.n_epochs)
 
         self.save_every = save_every
+
+        self.verbosity = verbosity
 
         self.current_epoch = 0
         self.loss_history = []
@@ -76,15 +107,24 @@ class ModelTrainer:
         while self.current_epoch < self.n_epochs:
 
             elbo = 0
-            for mini_batch in self.data_loader:
+            annealing_factor = self.beta_function(self.current_epoch)
 
-                loss = loss_fn(self.model.model, self.model.guide, *mini_batch)
+            batch_iter = (
+                tqdm(self.data_loader) if self.verbosity > 1 else self.data_loader
+            )
+
+            for mini_batch in batch_iter:
+                
+                loss = loss_fn(
+                    self.model.model, self.model.guide, *mini_batch, annealing_factor
+                )
                 loss.backward()
                 self.optimizer.step()
                 self.optimizer.zero_grad()
                 elbo = elbo + loss
 
-            print("epoch[%d] ELBO: %.1f" % (self.current_epoch, elbo))
+            if self.verbosity > 0:
+                print("epoch[%d] ELBO: %.1f" % (self.current_epoch, elbo))
 
             self.current_epoch += 1
             self.loss_history.append(float(elbo))
