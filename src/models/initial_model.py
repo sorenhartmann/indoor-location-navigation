@@ -4,8 +4,6 @@ from src.models.prior_params import prior_params as prior_params_default
 from src.utils import object_to_markdown
 from pyro import poutine, sample, plate
 
-from zmq import device
-
 import torch
 import pyro
 from src.models.trace_guide import TraceGuide
@@ -31,8 +29,8 @@ class InitialModel(torch.nn.Module):
             floor_data.info["map_info"]["width"],
         )
         self.floor_uniform = dist.Uniform(
-            low=torch.tensor([0.0, 0.0], dtype=torch.float64),
-            high=torch.tensor([height, width], dtype=torch.float64),
+            low=torch.tensor([0.0, 0.0], dtype=torch.float64, device=device),
+            high=torch.tensor([height, width], dtype=torch.float64, device=device),
         ).to_event(1)
 
         trace_guides = []
@@ -66,9 +64,7 @@ class InitialModel(torch.nn.Module):
             )
 
         self.trace_guides = torch.nn.ModuleList(trace_guides)
-        self.trace_guides.to(dtype=torch.float32)
-
-        self.to(dtype=torch.float64)
+        self.to(dtype=torch.float64, device=device)
 
     def model(
         self,
@@ -79,7 +75,7 @@ class InitialModel(torch.nn.Module):
         mini_batch_position_mask,
         annealing_factor=1.0,
     ):
-
+        
         pyro.module("initial_model", self)
 
         T_max = mini_batch_time.shape[-1]
@@ -177,7 +173,8 @@ def train_model():
 
     # Setup the optimizer
     adam_params = {"lr": 1e-2}  # ., "betas":(0.95, 0.999)}
-    optimizer = torch.optim.Adam(model.parameters(), **adam_params)
+    #optimizer = torch.optim.Adam(model.parameters(), **adam_params)
+    optimizer = pyro.optim.Adam(adam_params)
 
     # Setup model training
     n_epochs = 500

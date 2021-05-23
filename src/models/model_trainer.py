@@ -1,13 +1,22 @@
+from pyexpat import model
 from time import time
 import pyro
 import torch
-from pyro.infer import Trace_ELBO
+from pyro.infer import Trace_ELBO, SVI
 from src.data.datasets import get_loader
 from pathlib import Path
 from tqdm import tqdm
 
 project_dir = Path(__file__).resolve().parents[2]
 checkpoint_dir = project_dir / "checkpoints"
+
+
+if torch.cuda.is_available():
+    device = torch.device("cuda")
+    pin_memory = True
+else:
+    device = torch.device("cpu")
+    pin_memory = False
 
 
 class BetaFunction:
@@ -76,7 +85,7 @@ class ModelTrainer:
             "current_epoch": self.current_epoch,
             "loss_history": self.loss_history,
             "model_state_dict": self.model.state_dict(),
-            "optimizer_state_dict": self.optimizer.state_dict(),
+            "optimizer_state": self.optimizer.get_state(),
             "rng_state": torch.get_rng_state(),
         }
 
@@ -89,7 +98,8 @@ class ModelTrainer:
         self.current_epoch = checkpoint["current_epoch"]
         self.loss_history = checkpoint["loss_history"]
         self.model.load_state_dict(checkpoint["model_state_dict"])
-        self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+        #self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+        self.optimizer.load_state(checkpoint["optimizer_state"])
         torch.set_rng_state(checkpoint["rng_state"])
 
     def train(self, dataset):
@@ -98,14 +108,16 @@ class ModelTrainer:
         pyro.clear_param_store()
 
         num_particles = 10
-        loss_fn = Trace_ELBO(
-            num_particles=num_particles, vectorize_particles=True
-        ).differentiable_loss
+        svi = SVI(self.model.model, self.model.guide,self.optimizer, loss = Trace_ELBO(num_particles=num_particles, vectorize_particles=True))
 
-        self.data_loader = get_loader(dataset=dataset, batch_size=self.batch_size)
+        #loss_fn = Trace_ELBO(
+        #    num_particles=num_particles, vectorize_particles=True
+        #).differentiable_loss
+
+        self.data_loader = get_loader(dataset=dataset, batch_size=self.batch_size)#, pin_memory = pin_memory)
 
         while self.current_epoch < self.n_epochs:
-
+            
             elbo = 0
             annealing_factor = self.beta_function(self.current_epoch)
 
@@ -114,13 +126,13 @@ class ModelTrainer:
             )
 
             for mini_batch in batch_iter:
-                
-                loss = loss_fn(
-                    self.model.model, self.model.guide, *mini_batch, annealing_factor
-                )
-                loss.backward()
-                self.optimizer.step()
-                self.optimizer.zero_grad()
+                loss = svi.step(*mini_batch)
+                #loss = loss_fn(
+                #    self.model.model, self.model.guide, *mini_batch, annealing_factor
+                #)
+                #loss.backward()
+                #self.optimizer.step()
+                #self.optimizer.zero_grad()
                 elbo = elbo + loss
 
             if self.verbosity > 0:

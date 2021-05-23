@@ -5,9 +5,6 @@ from src.utils import object_to_markdown
 from pyro import poutine, sample, plate
 from src.models.prior_params import prior_params as prior_params_default
 
-
-from zmq import device
-
 import torch
 import pyro
 from src.models.trace_guide import TraceGuide
@@ -32,9 +29,10 @@ class BeaconModel(torch.nn.Module):
             floor_data.info["map_info"]["height"],
             floor_data.info["map_info"]["width"],
         )
+        
         self.floor_uniform = dist.Uniform(
-            low=torch.tensor([0.0, 0.0], dtype=torch.float64),
-            high=torch.tensor([height, width], dtype=torch.float64),
+            low=torch.tensor([0.0, 0.0], dtype=torch.float64,  device=device),
+            high=torch.tensor([height, width], dtype=torch.float64,  device=device),
         ).to_event(1)
 
         trace_guides = []
@@ -70,7 +68,6 @@ class BeaconModel(torch.nn.Module):
             )
 
         self.trace_guides = torch.nn.ModuleList(trace_guides)
-        self.trace_guides.to(dtype=torch.float32)
 
         self.register_parameter(
             "mu_q", torch.nn.Parameter(torch.full((self.K,), -45.0))
@@ -96,7 +93,7 @@ class BeaconModel(torch.nn.Module):
             torch.nn.Parameter(torch.full((self.B, 2), 0.0)),
         )
 
-        self.to(dtype=torch.float64)
+        self.to(dtype=torch.float64, device=device)
 
     def model(
         self,

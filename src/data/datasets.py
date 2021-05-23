@@ -21,8 +21,13 @@ from tqdm import tqdm
 from torch.utils.data.sampler import BatchSampler, RandomSampler
 from torch.utils.data import DataLoader, Dataset
 
+if torch.cuda.is_available():
+    device = torch.device("cuda")
+else:
+    device = torch.device("cpu")
+
 project_dir = Path(__file__).resolve().parents[2]
-# project_dir = Path("/work3/s164221")
+#project_dir = Path("/work3/s164221")
 
 raw_path = project_dir / "data" / "raw"
 interim_path = project_dir / "data" / "interim"
@@ -74,7 +79,7 @@ class FloorDataset(Dataset):
         test_percent=None,
         split_seed=123,
     ) -> None:
-
+        self.unpadded_tensors = None
         self.site_id = site_id
         self.floor_id = floor_id
 
@@ -154,7 +159,7 @@ class FloorDataset(Dataset):
         ) = self._generate_tensors()
 
         mini_batch_index = indices
-        mini_batch_length = torch.tensor([len(time_unpadded[i]) for i in indices])
+        mini_batch_length = torch.tensor([len(time_unpadded[i]) for i in indices], device=device)
 
         mini_batch_time = pad_sequence(
             [time_unpadded[i] for i in indices], batch_first=True
@@ -225,7 +230,8 @@ class FloorDataset(Dataset):
             return len(self.beacon_ids_)
 
     def _generate_tensors(self):
-
+        if self.unpadded_tensors is not None:
+            return self.unpadded_tensors
         sub_path = Path("train") / self.site_id / self.floor_id
         # cached_path = (processed_path / sub_path).with_suffix(".pkl.gz")
         cached_path = (processed_path / sub_path).with_suffix(".pt")
@@ -234,7 +240,7 @@ class FloorDataset(Dataset):
             # with gzip.open(cached_path, "rb") as f:
             #     sampling_interval, bssids, data_tensors_unpadded = pickle.load(f)
             data_parameters, bssids, beacon_ids, data_tensors_unpadded = torch.load(
-                cached_path
+                cached_path, map_location=device
             )
             if data_parameters == (self.sampling_interval, self.wifi_threshold):
                 self.bssids_ = bssids
@@ -321,6 +327,9 @@ class FloorDataset(Dataset):
             (data_parameters, self.bssids_, self.beacon_ids_, data_tensors_unpadded),
             cached_path,
         )
+        data_tensors_unpadded = [x.to(device=device) for x in data_tensors_unpadded]
+        self.unpadded_tensors = data_tensors_unpadded
+
         return data_tensors_unpadded
 
 
