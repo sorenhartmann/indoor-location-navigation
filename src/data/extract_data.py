@@ -157,7 +157,7 @@ def get_trace_data(trace_path):
 
         with file_path.open("r") as f:
             first_line = next(f)
-            if first_line is bytes:
+            if type(first_line) is bytes:
                 first_line = first_line.decode()
             start_time = int(re.search("(\d+)", first_line).group(0))
             raw = pd.read_csv(f, comment="#", header=None)
