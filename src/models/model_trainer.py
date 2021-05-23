@@ -1,4 +1,3 @@
-
 import pyro
 import torch
 from pyro.infer import Trace_ELBO
@@ -8,9 +7,16 @@ from pathlib import Path
 project_dir = Path(__file__).resolve().parents[2]
 checkpoint_dir = project_dir / "checkpoints"
 
+
 class ModelTrainer:
     def __init__(
-        self, model_label, model, optimizer, n_epochs=1000, batch_size=16, save_every=5
+        self,
+        model,
+        optimizer,
+        model_label=None,
+        n_epochs=1000,
+        batch_size=16,
+        save_every=5,
     ):
 
         self.model_label = model_label
@@ -22,8 +28,15 @@ class ModelTrainer:
 
         self.save_every = save_every
 
-        self.checkpoint_path = (checkpoint_dir / model_label).with_suffix(".pt")
-        self.load_checkpoint()
+        self.current_epoch = 0
+        self.loss_history = []
+
+        if self.model_label is not None:
+            self.checkpoint_path = (checkpoint_dir / model_label).with_suffix(".pt")
+            if self.checkpoint_path.exists():
+                self.load_checkpoint()
+        else:
+            self.checkpoint_path = None
 
     # saves the model and optimizer states to disk
     def save_checkpoint(self):
@@ -40,11 +53,6 @@ class ModelTrainer:
 
     # loads the model and optimizer states from disk
     def load_checkpoint(self):
-
-        if not self.checkpoint_path.exists():
-            self.current_epoch = 0
-            self.loss_history = []
-            return
 
         checkpoint = torch.load(self.checkpoint_path)
         self.current_epoch = checkpoint["current_epoch"]
@@ -63,7 +71,6 @@ class ModelTrainer:
             num_particles=num_particles, vectorize_particles=True
         ).differentiable_loss
 
-        
         self.data_loader = get_loader(dataset=dataset, batch_size=self.batch_size)
 
         while self.current_epoch < self.n_epochs:
@@ -82,5 +89,8 @@ class ModelTrainer:
             self.current_epoch += 1
             self.loss_history.append(float(elbo))
 
-            if self.current_epoch % self.save_every == 0:
+            if (
+                self.checkpoint_path is not None
+                and self.current_epoch % self.save_every == 0
+            ):
                 self.save_checkpoint()

@@ -1,7 +1,9 @@
 from src.models.model_trainer import ModelTrainer
-from src.data.datasets import SiteDataset
+from src.models.initial_model import InitialModel
+from src.data.datasets import FloorDataset, SiteDataset
 from src.utils import object_to_markdown
 from pyro import sample, plate
+
 
 from zmq import device
 
@@ -16,8 +18,9 @@ else:
     device = torch.device("cpu")
 
 
-class InitialModel(torch.nn.Module):
-    def __init__(self, floor_data):
+class BeaconModel(torch.nn.Module):
+
+    def __init__(self, floor_data: FloorDataset):
 
         super().__init__()
 
@@ -32,6 +35,7 @@ class InitialModel(torch.nn.Module):
 
         trace_guides = []
         self.K = floor_data.K
+        self.B = floor_data.B
 
         for trace in floor_data.traces:
 
@@ -52,7 +56,9 @@ class InitialModel(torch.nn.Module):
         self.trace_guides = torch.nn.ModuleList(trace_guides)
         self.trace_guides.to(dtype=torch.float32)
 
-        self.register_parameter("mu_q", torch.nn.Parameter(torch.full((self.K,), -45.0)))
+        self.register_parameter(
+            "mu_q", torch.nn.Parameter(torch.full((self.K,), -45.0))
+        )
         self.register_parameter(
             "log_sigma_q", torch.nn.Parameter(torch.full((self.K,), 0.0))
         )
@@ -61,7 +67,17 @@ class InitialModel(torch.nn.Module):
             torch.nn.Parameter(torch.tile(self.floor_uniform.mean, (self.K, 1))),
         )
         self.register_parameter(
-            "wifi_location_log_sigma_q", torch.nn.Parameter(torch.full((self.K, 2), 0.0))
+            "wifi_location_log_sigma_q",
+            torch.nn.Parameter(torch.full((self.K, 2), 0.0)),
+        )
+
+        self.register_parameter(
+            "beacon_location_q",
+            torch.nn.Parameter(torch.tile(self.floor_uniform.mean, (self.B, 1))),
+        )
+        self.register_parameter(
+            "beacon_location_log_sigma_q",
+            torch.nn.Parameter(torch.full((self.B, 2), 0.0)),
         )
 
         self.to(dtype=torch.float64)
@@ -75,13 +91,16 @@ class InitialModel(torch.nn.Module):
         mini_batch_position_mask,
         mini_batch_wifi,
         mini_batch_wifi_mask,
+        mini_batch_beacon,
+        mini_batch_beacon_mask,
         annealing_factor=1.0,
     ):
 
         pyro.module("initial_model", self)
 
         T_max = mini_batch_time.shape[-1]
-        K = mini_batch_wifi.shape[-1]
+        K = self.K
+        B = self.B
 
         relaxed_floor_dist = dist.Normal(
             self.floor_uniform.mean, self.floor_uniform.stddev
@@ -93,12 +112,15 @@ class InitialModel(torch.nn.Module):
 
         # Wifi signal strength priors
         mu_omega_0 = torch.tensor(-45.0, device=device)
-        sigma_omega_0 = torch.tensor(
-            10.0, device=device
-        )  # grundsignal styrke spredning.
-        sigma_omega = torch.tensor(
-            5.0, device=device
-        )  # How accurate is the measured signal stregth
+
+        # grundsignal styrke spredning.
+        sigma_omega_0 = torch.tensor(10.0, device=device)
+
+        # How accurate is the measured signal stregth
+        sigma_omega = torch.tensor(5.0, device=device)
+
+        # Distance estimate uncertainty
+        sigma_delta = torch.tensor(10.0, device=device)
 
         with pyro.plate("mini_batch", len(mini_batch_index)):
 
@@ -141,7 +163,25 @@ class InitialModel(torch.nn.Module):
                     obs=mini_batch_wifi[any_wifi_is_observed],
                 )
 
-        return x, wifi_location
+
+        any_beacon_is_observed = mini_batch_beacon_mask.any(dim=-1)
+
+        with plate("beacons", B):
+            beacon_location = sample("beacon_location", relaxed_floor_dist)
+            distance = torch.cdist(x[..., any_beacon_is_observed, :], beacon_location)
+            with plate("beacon_is_observed", any_beacon_is_observed.sum()):
+                # Probably not the most suitable distribution
+                delta = sample(
+                    "delta", 
+                    dist.Normal(distance, sigma_delta).mask(
+                        mini_batch_beacon_mask[any_beacon_is_observed]
+                    ),
+                    obs=mini_batch_beacon[any_beacon_is_observed]
+                )
+                pass
+
+
+        return x, wifi_location, beacon_location
 
     def guide(
         self,
@@ -152,13 +192,16 @@ class InitialModel(torch.nn.Module):
         mini_batch_position_mask,
         mini_batch_wifi,
         mini_batch_wifi_mask,
+        mini_batch_beacon,
+        mini_batch_beacon_mask,
         annealing_factor=1.0,
     ):
 
         pyro.module("initial_model", self)
 
         T_max = mini_batch_time.shape[-1]
-        K = mini_batch_wifi.shape[-1]
+        K = self.K
+        B = self.B
 
         location = torch.zeros((len(mini_batch_index), T_max, 2), device=device)
         scale = torch.zeros((len(mini_batch_index),), device=device)
@@ -186,7 +229,14 @@ class InitialModel(torch.nn.Module):
                     self.wifi_location_q, self.wifi_location_log_sigma_q.exp()
                 ).to_event(1),
             )
-        return location, scale
+
+        with plate("beacons", B):
+            sample(
+                "beacon_location",
+                dist.Normal(
+                    self.beacon_location_q, self.beacon_location_log_sigma_q.exp()
+                ).to_event(1),
+            )
 
 
 def train_model():
@@ -195,12 +245,12 @@ def train_model():
 
     # Load data
     site_data = SiteDataset(
-        "5a0546857ecc773753327266", wifi_threshold=200, sampling_interval=100
+        "5a0546857ecc773753327266", wifi_threshold=200, sampling_interval=100, include_beacon=True
     )
     floor = site_data.floors[0]
 
     # Setup model
-    model = InitialModel(floor)
+    model = BeaconModel(floor)
 
     # Setup the optimizer
     adam_params = {"lr": 1e-2}  # ., "betas":(0.95, 0.999)}
@@ -210,7 +260,7 @@ def train_model():
     n_epochs = 2000
     batch_size = 16
     mt = ModelTrainer(
-        model_label="initial_model",
+        model_label="beacon_model",
         model=model,
         optimizer=optimizer,
         n_epochs=n_epochs,
