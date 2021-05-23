@@ -186,6 +186,7 @@ class InitialModel(torch.nn.Module):
                     self.wifi_location_q, self.wifi_location_log_sigma_q.exp()
                 ).to_event(1),
             )
+        return location, scale
 
 
 def train_model():
