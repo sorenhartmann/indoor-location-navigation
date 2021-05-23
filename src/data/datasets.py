@@ -27,7 +27,7 @@ else:
     device = torch.device("cpu")
 
 project_dir = Path(__file__).resolve().parents[2]
-#project_dir = Path("/work3/s164221")
+# project_dir = Path("/work3/s164221")
 
 raw_path = project_dir / "data" / "raw"
 interim_path = project_dir / "data" / "interim"
@@ -98,7 +98,7 @@ class FloorDataset(Dataset):
         ]
 
         # ---- TEST TRAIN SPLIT -----
-        
+
         trace_indices = set(range(len(self.traces)))
         self.validation_mask = torch.full((len(self.traces),), False)
         self.test_mask = torch.full((len(self.traces),), False)
@@ -119,9 +119,6 @@ class FloorDataset(Dataset):
             )
             trace_indices.difference_update(test_indices)
             self.test_mask[test_indices] = True
-
-        
-
 
     @cached_property
     def image(self):
@@ -159,7 +156,9 @@ class FloorDataset(Dataset):
         ) = self._generate_tensors()
 
         mini_batch_index = indices
-        mini_batch_length = torch.tensor([len(time_unpadded[i]) for i in indices], device=device)
+        mini_batch_length = torch.tensor(
+            [len(time_unpadded[i]) for i in indices], device=device
+        )
 
         mini_batch_time = pad_sequence(
             [time_unpadded[i] for i in indices], batch_first=True
@@ -327,7 +326,9 @@ class FloorDataset(Dataset):
             (data_parameters, self.bssids_, self.beacon_ids_, data_tensors_unpadded),
             cached_path,
         )
-        data_tensors_unpadded = [x.to(device=device) for x in data_tensors_unpadded]
+        data_tensors_unpadded = [
+            [y.to(device=device) for y in x] for x in data_tensors_unpadded
+        ]
         self.unpadded_tensors = data_tensors_unpadded
 
         return data_tensors_unpadded

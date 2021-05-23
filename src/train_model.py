@@ -8,7 +8,7 @@ import click
 
 @click.command()
 @click.argument("model-type", default="initial")
-@click.argument("experiment-name", default="wifi_model_unk")
+@click.argument("experiment-name", default="unnamed")
 @click.option("--n-epochs", type=int, default=500)
 @click.option("--batch-size", type=int, default=16, show_default=True)
 @click.option("--beta_0", type=float, default=0.1)
@@ -42,6 +42,7 @@ def main(model_type, experiment_name, n_epochs, batch_size, beta_0, lr, verbosit
     floor_data = FloorDataset(
         site_id="5d2709b303f801723c327472",
         floor_id="1F",
+        wifi_threshold=400,
         include_wifi=include_wifi,
         include_beacon=include_beacon,
         validation_percent=validation_percent,
@@ -50,17 +51,18 @@ def main(model_type, experiment_name, n_epochs, batch_size, beta_0, lr, verbosit
     # Setup model
     model = ModelClass(floor_data)
 
-    print(model_type, experiment_name)
-
     # Setup the optimizer
     adam_params = {"lr": lr}  # ., "betas":(0.95, 0.999)}
     #optimizer = torch.optim.Adam(model.parameters(), **adam_params)
     optimizer = pyro.optim.Adam(adam_params)
 
+    if experiment_name == "unnamed":
+        experiment_name = f"{model_type}-model"
+
     mt = ModelTrainer(
         model=model,
         optimizer=optimizer,
-        model_label=f"{experiment_name}",
+        model_label=experiment_name,
         n_epochs=n_epochs,
         batch_size=batch_size,
         beta_0=beta_0,
@@ -70,4 +72,5 @@ def main(model_type, experiment_name, n_epochs, batch_size, beta_0, lr, verbosit
     mt.train(floor_data)
 
 if __name__ == "__main__":
+
     main()
