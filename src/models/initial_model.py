@@ -34,7 +34,7 @@ class InitialModel(torch.nn.Module):
 
         for trace in floor_data.traces:
 
-            time, position, _ = trace[0]
+            time, position, _, _ = trace[0]
 
             pos_is_obs = ~position.isnan().any(-1)
             loc_bias = position[pos_is_obs].mean(axis=0)
