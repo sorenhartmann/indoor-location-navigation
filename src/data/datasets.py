@@ -19,6 +19,7 @@ from torch.utils.data.sampler import BatchSampler, RandomSampler
 from torch.utils.data import DataLoader, Dataset
 
 project_dir = Path(__file__).resolve().parents[2]
+#project_dir = Path("/work3/s164221")
 
 raw_path = project_dir / "data" / "raw"
 interim_path = project_dir / "data" / "interim"

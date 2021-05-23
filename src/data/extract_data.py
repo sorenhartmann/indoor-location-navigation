@@ -18,6 +18,7 @@ from tqdm import tqdm
 RAW_FILE_NAME = "indoor-location-navigation.zip"
 
 project_dir = Path(__file__).resolve().parents[2]
+#project_dir = Path("/work3/s164221")
 
 raw_path = project_dir / "data" / "raw"
 interim_path = project_dir / "data" / "interim"
