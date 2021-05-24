@@ -74,7 +74,7 @@ class WifiModel(torch.nn.Module):
         )
         self.register_parameter(
             "wifi_location_q",
-            torch.nn.Parameter(torch.tile(self.floor_uniform.mean, (self.K, 1))),
+            torch.nn.Parameter(self.floor_uniform.sample((self.K,))),
         )
         self.register_parameter(
             "wifi_location_log_sigma_q",

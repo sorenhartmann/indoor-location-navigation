@@ -77,7 +77,7 @@ class BeaconModel(torch.nn.Module):
         )
         self.register_parameter(
             "wifi_location_q",
-            torch.nn.Parameter(torch.tile(self.floor_uniform.mean, (self.K, 1))),
+            torch.nn.Parameter(self.floor_uniform.sample((self.K,))),
         )
         self.register_parameter(
             "wifi_location_log_sigma_q",
@@ -86,7 +86,7 @@ class BeaconModel(torch.nn.Module):
 
         self.register_parameter(
             "beacon_location_q",
-            torch.nn.Parameter(torch.tile(self.floor_uniform.mean, (self.B, 1))),
+            torch.nn.Parameter(self.floor_uniform.sample((self.B,))),
         )
         self.register_parameter(
             "beacon_location_log_sigma_q",
@@ -250,3 +250,22 @@ class BeaconModel(torch.nn.Module):
                 )
 
         return location, scale
+
+
+if __name__ == "__main__":
+
+    site_id = "5d2709b303f801723c327472"
+    floor_id = "1F"
+
+    floor_data = FloorDataset(
+        site_id, 
+        floor_id, 
+        wifi_threshold=400, 
+        sampling_interval=100, 
+        include_wifi=True, 
+        include_beacon=True,        
+        validation_percent=0.3,
+        test_percent=0.2
+        )
+
+    beacon_model = BeaconModel(floor_data)
