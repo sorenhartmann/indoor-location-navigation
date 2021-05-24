@@ -136,3 +136,5 @@ class ModelTrainer:
                 and self.current_epoch % self.save_every == 0
             ):
                 self.save_checkpoint()
+
+        self.save_checkpoint()

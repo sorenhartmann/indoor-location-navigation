@@ -1,7 +1,7 @@
 prior_params = {
     
-    "sigma_eps": 0.25,  # std [m/100ms]
-    "sigma": 0.1,  # std of noise measurement [m]
+    "sigma_eps": 0.14,  # std [m/100ms]
+    "sigma": 0.05,  # std of noise measurement [m]
 
     # Wifi signal strength priors
     "mu_omega_0": -45.0,

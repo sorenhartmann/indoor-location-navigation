@@ -229,21 +229,27 @@ class FloorDataset(Dataset):
             return len(self.beacon_ids_)
 
     def _generate_tensors(self):
+
         if self.unpadded_tensors is not None:
             return self.unpadded_tensors
         sub_path = Path("train") / self.site_id / self.floor_id
-        # cached_path = (processed_path / sub_path).with_suffix(".pkl.gz")
+
         cached_path = (processed_path / sub_path).with_suffix(".pt")
 
         if cached_path.exists():
-            # with gzip.open(cached_path, "rb") as f:
-            #     sampling_interval, bssids, data_tensors_unpadded = pickle.load(f)
+            
             data_parameters, bssids, beacon_ids, data_tensors_unpadded = torch.load(
                 cached_path, map_location=device
             )
             if data_parameters == (self.sampling_interval, self.wifi_threshold):
+
                 self.bssids_ = bssids
                 self.beacon_ids_ = beacon_ids
+
+                data_tensors_unpadded = [
+                    [y.to(device=device) for y in x] for x in data_tensors_unpadded
+                ]
+                self.unpadded_tensors = data_tensors_unpadded
                 return data_tensors_unpadded
 
         time_unpadded = []
@@ -290,7 +296,7 @@ class FloorDataset(Dataset):
             wifi_aligned[:, new_index] = wifi[:, old_index]
             wifi_unpadded.append(wifi_aligned)
 
-        ## Aligning floor wide beacon signals
+
         self.beacon_ids_ = sorted(
             set(
                 beacon_id
@@ -516,7 +522,7 @@ if __name__ == "__main__":
     floor_data = FloorDataset(
         site_id,
         floor_id,
-        wifi_threshold=200,
+        wifi_threshold=400,
         sampling_interval=100,
         validation_percent=0.2,
         test_percent=0.1,

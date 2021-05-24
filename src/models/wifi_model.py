@@ -30,7 +30,7 @@ class WifiModel(torch.nn.Module):
         )
         self.floor_uniform = dist.Uniform(
             low=torch.tensor([0.0, 0.0], dtype=torch.float64,  device=device),
-            high=torch.tensor([height, width], dtype=torch.float64,  device=device),
+            high=torch.tensor([width, height], dtype=torch.float64,  device=device),
         ).to_event(1)
 
         trace_guides = []
