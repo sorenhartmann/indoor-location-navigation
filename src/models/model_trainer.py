@@ -110,11 +110,7 @@ class ModelTrainer:
         num_particles = 10
         svi = SVI(self.model.model, self.model.guide,self.optimizer, loss = Trace_ELBO(num_particles=num_particles, vectorize_particles=True))
 
-        #loss_fn = Trace_ELBO(
-        #    num_particles=num_particles, vectorize_particles=True
-        #).differentiable_loss
-
-        self.data_loader = get_loader(dataset=dataset, batch_size=self.batch_size)#, pin_memory = pin_memory)
+        self.data_loader = get_loader(dataset=dataset, batch_size=self.batch_size)
 
         while self.current_epoch < self.n_epochs:
             
@@ -126,13 +122,7 @@ class ModelTrainer:
             )
 
             for mini_batch in batch_iter:
-                loss = svi.step(*mini_batch)
-                #loss = loss_fn(
-                #    self.model.model, self.model.guide, *mini_batch, annealing_factor
-                #)
-                #loss.backward()
-                #self.optimizer.step()
-                #self.optimizer.zero_grad()
+                loss = svi.step(*mini_batch, annealing_factor)
                 elbo = elbo + loss
 
             if self.verbosity > 0:
