@@ -28,6 +28,7 @@ class InitialModel(torch.nn.Module):
             floor_data.info["map_info"]["height"],
             floor_data.info["map_info"]["width"],
         )
+        print(height, width)
         self.floor_uniform = dist.Uniform(
             low=torch.tensor([0.0, 0.0], dtype=torch.float64, device=device),
             high=torch.tensor([height, width], dtype=torch.float64, device=device),
@@ -151,48 +152,3 @@ class InitialModel(torch.nn.Module):
                     )
 
         return location, scale
-
-
-def train_model():
-
-    torch.manual_seed(123456789)
-
-    # Load data
-    floor_data = FloorDataset(
-        site_id="5d2709b303f801723c327472",
-        floor_id="1F",
-        wifi_threshold=400,
-        sampling_interval=100,
-        include_wifi=False,
-        include_beacon=False,
-        validation_percent=None,
-        test_percent=None,
-    )
-    # Setup model
-    model = InitialModel(floor_data)
-
-    # Setup the optimizer
-    adam_params = {"lr": 1e-2}  # ., "betas":(0.95, 0.999)}
-    #optimizer = torch.optim.Adam(model.parameters(), **adam_params)
-    optimizer = pyro.optim.Adam(adam_params)
-
-    # Setup model training
-    n_epochs = 500
-    batch_size = 16
-    mt = ModelTrainer(
-        model_label="initial_model",
-        model=model,
-        optimizer=optimizer,
-        n_epochs=n_epochs,
-        batch_size=batch_size,
-        beta_0=0.1,
-        verbosity=2,
-    )
-
-    # Train the model
-    mt.train(floor_data)
-
-
-if __name__ == "__main__":
-
-    train_model()
