@@ -16,7 +16,7 @@ else:
 
 class WifiModel(torch.nn.Module):
     
-        def __init__(self, floor_data, prior_params=None):
+    def __init__(self, floor_data, prior_params=None):
 
         super().__init__()
 
