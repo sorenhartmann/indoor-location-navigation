@@ -15,7 +15,6 @@ else:
 
 
 class InitialModel(torch.nn.Module):
-    
     def __init__(self, floor_data, prior_params=None):
 
         super().__init__()
@@ -40,7 +39,7 @@ class InitialModel(torch.nn.Module):
 
             time, position, _, _ = trace[0]
 
-            n_basis_functions = int(min(max(time[-1] // 4, 3), 40))
+            n_basis_functions = int(min(max(time[-1] // 4, 5), 20))
 
             if floor_data.validation_mask[i] or floor_data.test_mask[i]:
                 loc_bias = self.floor_uniform.mean
@@ -76,7 +75,7 @@ class InitialModel(torch.nn.Module):
         mini_batch_position_mask,
         annealing_factor=1.0,
     ):
-        
+
         pyro.module("initial_model", self)
 
         T_max = mini_batch_time.shape[-1]

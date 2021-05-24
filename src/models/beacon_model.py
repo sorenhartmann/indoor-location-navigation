@@ -16,6 +16,7 @@ else:
 
 
 class BeaconModel(torch.nn.Module):
+
     def __init__(self, floor_data, prior_params=None):
 
         super().__init__()
@@ -42,7 +43,7 @@ class BeaconModel(torch.nn.Module):
 
             time, position, _, _ = trace[0]
 
-            n_basis_functions = int(min(max(time[-1] // 4, 3), 40))
+            n_basis_functions = int(min(max(time[-1] // 4, 5), 20))
             
             if floor_data.validation_mask[i] or floor_data.test_mask[i]:
                 loc_bias = self.floor_uniform.mean

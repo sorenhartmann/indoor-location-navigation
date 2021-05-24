@@ -13,8 +13,10 @@ if torch.cuda.is_available():
 else:
     device = torch.device("cpu")
 
+
 class WifiModel(torch.nn.Module):
-    def __init__(self, floor_data, prior_params=None):
+    
+        def __init__(self, floor_data, prior_params=None):
 
         super().__init__()
 
@@ -26,9 +28,10 @@ class WifiModel(torch.nn.Module):
             floor_data.info["map_info"]["height"],
             floor_data.info["map_info"]["width"],
         )
+
         self.floor_uniform = dist.Uniform(
-            low=torch.tensor([0.0, 0.0], dtype=torch.float64,  device=device),
-            high=torch.tensor([width, height], dtype=torch.float64,  device=device),
+            low=torch.tensor([0.0, 0.0], dtype=torch.float64, device=device),
+            high=torch.tensor([width, height], dtype=torch.float64, device=device),
         ).to_event(1)
 
         trace_guides = []
@@ -38,7 +41,7 @@ class WifiModel(torch.nn.Module):
 
             time, position, _, _ = trace[0]
 
-            n_basis_functions = int(min(max(time[-1] // 4, 3), 40))
+            n_basis_functions = int(min(max(time[-1] // 4, 5), 20))
 
             if floor_data.validation_mask[i] or floor_data.test_mask[i]:
                 loc_bias = self.floor_uniform.mean

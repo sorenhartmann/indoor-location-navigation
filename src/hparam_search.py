@@ -20,10 +20,10 @@ class Objective:
     ):
 
         if site_id is None:
-            site_id = "5d2709b303f801723c327472"
+            site_id = "5a0546857ecc773753327266"
 
         if floor_id is None:
-            floor_id = "1F"
+            floor_id = "B1"
 
         self.n_epochs = n_epochs
         self.batch_size = batch_size

@@ -155,8 +155,9 @@ class ModelTrainer:
 @click.option("--batch-size", type=int, default=16, show_default=True)
 @click.option("--beta_0", type=float, default=0.1)
 @click.option("--lr", type=float, default=1e-2)
+@click.option("--clip", type=int, default=0)
 @click.option("--verbosity", type=int, default=2)
-def main(model_type, experiment_name, n_epochs, batch_size, beta_0, lr, verbosity):
+def main(model_type, experiment_name, n_epochs, batch_size, beta_0, lr, clip, verbosity):
 
     if model_type == "initial":
         ModelClass = InitialModel
@@ -169,22 +170,22 @@ def main(model_type, experiment_name, n_epochs, batch_size, beta_0, lr, verbosit
         ModelClass = WifiModel
         include_wifi = True
         include_beacon = False
-        validation_percent=0.3
-        test_percent=0.2
+        validation_percent=None
+        test_percent=0.15
 
     elif model_type == "beacon":
         ModelClass = BeaconModel
         include_wifi = True
         include_beacon = True
-        validation_percent=0.3
-        test_percent=0.2
+        validation_percent=None
+        test_percent=0.15
     else:
         print(f"Cannot read model type: {model_type}")
 
     floor_data = FloorDataset(
-        site_id="5d2709b303f801723c327472",
-        floor_id="1F",
-        wifi_threshold=400,
+        site_id="5a0546857ecc773753327266",
+        floor_id="B1",
+        wifi_threshold=200,
         include_wifi=include_wifi,
         include_beacon=include_beacon,
         validation_percent=validation_percent,
@@ -194,8 +195,12 @@ def main(model_type, experiment_name, n_epochs, batch_size, beta_0, lr, verbosit
     model = ModelClass(floor_data)
 
     # Setup the optimizer
-    adam_params = {"lr": lr, "betas":(0.95, 0.999)}
-    optimizer = pyro.optim.ClippedAdam(adam_params)
+    adam_params = {"lr": lr}
+
+    if clip:
+        optimizer = pyro.optim.ClippedAdam(adam_params)
+    else:
+        optimizer = pyro.optim.Adam(adam_params)
 
     if experiment_name == "unnamed":
         experiment_name = f"{model_type}-model"
