@@ -1,4 +1,3 @@
-from src.models.model_trainer import ModelTrainer
 from src.data.datasets import FloorDataset, SiteDataset
 from src.models.prior_params import prior_params as prior_params_default
 from src.utils import object_to_markdown
@@ -13,7 +12,6 @@ if torch.cuda.is_available():
     device = torch.device("cuda")
 else:
     device = torch.device("cpu")
-
 
 class WifiModel(torch.nn.Module):
     def __init__(self, floor_data, prior_params=None):
@@ -95,7 +93,7 @@ class WifiModel(torch.nn.Module):
         annealing_factor=1.0,
     ):
 
-        pyro.module("initial_model", self)
+        pyro.module("wifi_model", self)
 
         T_max = mini_batch_time.shape[-1]
         K = self.K
@@ -170,7 +168,7 @@ class WifiModel(torch.nn.Module):
         annealing_factor=1.0,
     ):
 
-        pyro.module("initial_model", self)
+        pyro.module("wifi_model", self)
 
         T_max = mini_batch_time.shape[-1]
         K = self.K

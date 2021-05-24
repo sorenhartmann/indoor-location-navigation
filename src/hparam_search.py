@@ -3,7 +3,7 @@ from pathlib import Path
 
 from optuna import study
 import pyro
-from src.models.model_trainer import ModelTrainer
+from src.train_model import ModelTrainer
 from src.data.datasets import FloorDataset
 from src.models.initial_model import InitialModel
 from src.models.wifi_model import WifiModel

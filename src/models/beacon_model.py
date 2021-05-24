@@ -1,4 +1,3 @@
-from src.models.model_trainer import ModelTrainer
 from src.models.initial_model import InitialModel
 from src.data.datasets import FloorDataset, SiteDataset
 from src.utils import object_to_markdown
@@ -109,7 +108,7 @@ class BeaconModel(torch.nn.Module):
         annealing_factor=1.0,
     ):
 
-        pyro.module("initial_model", self)
+        pyro.module("beacon_model", self)
 
         T_max = mini_batch_time.shape[-1]
         K = self.K
@@ -206,7 +205,7 @@ class BeaconModel(torch.nn.Module):
         annealing_factor=1.0,
     ):
 
-        pyro.module("initial_model", self)
+        pyro.module("beacon_model", self)
 
         T_max = mini_batch_time.shape[-1]
         K = self.K

@@ -1,4 +1,3 @@
-from src.models.model_trainer import ModelTrainer
 from src.data.datasets import FloorDataset, SiteDataset
 from src.models.prior_params import prior_params as prior_params_default
 from src.utils import object_to_markdown
@@ -16,6 +15,7 @@ else:
 
 
 class InitialModel(torch.nn.Module):
+    
     def __init__(self, floor_data, prior_params=None):
 
         super().__init__()
@@ -28,7 +28,7 @@ class InitialModel(torch.nn.Module):
             floor_data.info["map_info"]["height"],
             floor_data.info["map_info"]["width"],
         )
-        print(height, width)
+
         self.floor_uniform = dist.Uniform(
             low=torch.tensor([0.0, 0.0], dtype=torch.float64, device=device),
             high=torch.tensor([width, height], dtype=torch.float64, device=device),
