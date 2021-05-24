@@ -1,13 +1,14 @@
 # external requirements
 numpy
 pandas
-torch
+torch>=1.8
 pyro-ppl
 ipykernel
 seaborn
 Pillow
 kaggle
-numpyro
+click
+optuna
 
 # local package
 -e .
