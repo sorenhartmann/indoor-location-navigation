@@ -16,8 +16,16 @@ import torch
 
 class Objective:
     def __init__(
-        self, model_type, site_id=None, floor_id=None, n_epochs=500, batch_size=16
+        self,
+        model_type,
+        site_id=None,
+        floor_id=None,
+        n_epochs=500,
+        batch_size=16,
+        use_elbo=True,
     ):
+
+        self.use_elbo = use_elbo
 
         if site_id is None:
             site_id = "5a0546857ecc773753327266"
@@ -34,25 +42,25 @@ class Objective:
             self.ModelClass = InitialModel
             include_wifi = False
             include_beacon = False
-            validation_percent=None
-            test_percent=None
+            validation_percent = None
+            test_percent = None
         elif self.model_type == "wifi":
             self.ModelClass = WifiModel
             include_wifi = True
             include_beacon = False
-            validation_percent=0.3
-            test_percent=0.2
+            validation_percent = None
+            test_percent = 0.15
         elif self.model_type == "beacon":
             self.ModelClass = BeaconModel
             include_wifi = True
             include_beacon = True
-            validation_percent=0.3
-            test_percent=0.2
+            validation_percent = None
+            test_percent = 0.15
 
         self.floor_data = FloorDataset(
             site_id=site_id,
             floor_id=floor_id,
-            wifi_threshold=400,
+            wifi_threshold=200,
             include_wifi=include_wifi,
             include_beacon=include_beacon,
             validation_percent=validation_percent,
@@ -65,11 +73,19 @@ class Objective:
         lr = trial.suggest_loguniform("lr", 1e-3, 5e-2)
         sigma_eps = trial.suggest_uniform("sigma_eps", 0.1, 0.5)
 
+        use_clip = trial.suggest_categorical("clip", [True, False])
+
         model = self.ModelClass(self.floor_data, prior_params={"sigma_eps": sigma_eps})
 
         # Setup the optimizer
-        adam_params = {"lr": lr}
-        optimizer = pyro.optim.Adam(adam_params)
+        if use_clip:
+            gamma = trial.suggest_uniform("gamma", 0.1, 1.0)
+            lrd = gamma ** (1 / self.n_epochs)
+            adam_params = {"lr": lr, "lrd": lrd}
+            optimizer = pyro.optim.ClippedAdam(adam_params)
+        else:
+            adam_params = {"lr": lr}
+            optimizer = pyro.optim.Adam(adam_params)
 
         n_epochs = self.n_epochs
         batch_size = self.batch_size
@@ -85,7 +101,10 @@ class Objective:
         )
         mt.train(self.floor_data)
 
-        return mt.loss_history[-1]
+        if self.use_elbo:
+            return mt.loss_history[-1]
+        else:
+            raise NotImplementedError
 
 
 @click.command()
@@ -94,17 +113,20 @@ class Objective:
 @click.option("--n-epochs", type=int, default=500, show_default=True)
 @click.option("--batch-size", type=int, default=16, show_default=True)
 @click.option("--name", type=str)
-@click.option("--seed", type=int, default=10)
+@click.option("--use-elbo", type=int, default=1)
+@click.option("--seed", type=int, default=None)
 def main(
     model_type,
     n_trials,
     n_epochs,
     batch_size,
     name,
+    use_elbo,
     seed,
 ):
 
-    torch.manual_seed(seed)
+    if seed is not None:
+        torch.manual_seed(seed)
 
     root_dir = (Path(__file__).parents[1]).resolve()
 
@@ -112,7 +134,6 @@ def main(
         study_name = f"{model_type}"
     else:
         study_name = name
-
 
     storage_name = (
         f"sqlite:///{(root_dir / 'optuna-storage.db').relative_to(os.getcwd())}"
@@ -125,11 +146,13 @@ def main(
         load_if_exists=True,
     )
 
-    objective = Objective(model_type, n_epochs=n_epochs, batch_size=batch_size)
-    
+    objective = Objective(
+        model_type, n_epochs=n_epochs, batch_size=batch_size, use_elbo=use_elbo
+    )
+
     study.optimize(objective, n_trials=n_trials)
 
 
 if __name__ == "__main__":
+
     main()
-    
