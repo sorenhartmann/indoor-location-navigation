@@ -1,4 +1,6 @@
 from os import major
+
+import optuna
 from src.data.datasets import FloorDataset
 from src.models.initial_model import InitialModel
 from src.models.wifi_model import WifiModel
@@ -14,6 +16,22 @@ from pyro.infer import Trace_ELBO, SVI
 from src.data.datasets import get_loader
 from pathlib import Path
 from tqdm import tqdm
+
+def get_mse(model, floor_data_full, test_mask):
+
+
+    mini_batch = floor_data_full[test_mask.nonzero().flatten()]
+
+    mini_batch_position = mini_batch[3]
+    mini_batch_position_mask = mini_batch[4]
+
+    with torch.no_grad():
+        loc_q, _ = model.guide(*mini_batch)
+        x_est = loc_q[mini_batch_position_mask, :]
+
+    x_hat = mini_batch_position[mini_batch_position_mask, :]
+
+    return ((x_est - x_hat) ** 2).sum(-1).mean()
 
 project_dir = Path(__file__).resolve().parents[1]
 checkpoint_dir = project_dir / "checkpoints"
@@ -49,6 +67,7 @@ class BetaFunction:
         else:
             return 1
 
+
 class ModelTrainer:
     def __init__(
         self,
@@ -60,7 +79,10 @@ class ModelTrainer:
         beta_0=1.0,
         save_every=5,
         verbosity=1,
+        post_epoch_callback=None,
     ):
+
+        self.post_epoch_callback = post_epoch_callback
 
         self.model_label = model_label
 
@@ -103,7 +125,6 @@ class ModelTrainer:
 
         checkpoint = torch.load(self.checkpoint_path, map_location=device)
 
-
         self.current_epoch = checkpoint["current_epoch"]
         self.loss_history = checkpoint["loss_history"]
         self.model.load_state_dict(checkpoint["model_state_dict"])
@@ -116,12 +137,17 @@ class ModelTrainer:
         pyro.clear_param_store()
 
         num_particles = 10
-        svi = SVI(self.model.model, self.model.guide,self.optimizer, loss = Trace_ELBO(num_particles=num_particles, vectorize_particles=True))
+        svi = SVI(
+            self.model.model,
+            self.model.guide,
+            self.optimizer,
+            loss=Trace_ELBO(num_particles=num_particles, vectorize_particles=True),
+        )
 
         self.data_loader = get_loader(dataset=dataset, batch_size=self.batch_size)
 
         while self.current_epoch < self.n_epochs:
-            
+
             elbo = 0
             annealing_factor = self.beta_function(self.current_epoch)
 
@@ -139,11 +165,11 @@ class ModelTrainer:
             self.current_epoch += 1
             self.loss_history.append(float(elbo))
 
-            if (
-                self.checkpoint_path is not None
-                and self.current_epoch % self.save_every == 0
-            ):
-                self.save_checkpoint()
+            if self.current_epoch % self.save_every == 0:
+                if self.checkpoint_path is not None:
+                    self.save_checkpoint()
+                if self.post_epoch_callback is not None:
+                    self.post_epoch_callback(self.current_epoch)
 
         self.save_checkpoint()
 
@@ -157,28 +183,30 @@ class ModelTrainer:
 @click.option("--lr", type=float, default=1e-2)
 @click.option("--clip", type=int, default=0)
 @click.option("--verbosity", type=int, default=2)
-def main(model_type, experiment_name, n_epochs, batch_size, beta_0, lr, clip, verbosity):
+def main(
+    model_type, experiment_name, n_epochs, batch_size, beta_0, lr, clip, verbosity
+):
 
     if model_type == "initial":
         ModelClass = InitialModel
         include_wifi = False
         include_beacon = False
-        validation_percent=None
-        test_percent=None
+        validation_percent = None
+        test_percent = None
 
     elif model_type == "wifi":
         ModelClass = WifiModel
         include_wifi = True
         include_beacon = False
-        validation_percent=None
-        test_percent=0.15
+        validation_percent = None
+        test_percent = 0.15
 
     elif model_type == "beacon":
         ModelClass = BeaconModel
         include_wifi = True
         include_beacon = True
-        validation_percent=None
-        test_percent=0.15
+        validation_percent = None
+        test_percent = 0.15
     else:
         print(f"Cannot read model type: {model_type}")
 
@@ -191,7 +219,7 @@ def main(model_type, experiment_name, n_epochs, batch_size, beta_0, lr, clip, ve
         validation_percent=validation_percent,
         test_percent=test_percent,
     )
-    # Setup model 
+    # Setup model
     model = ModelClass(floor_data)
 
     # Setup the optimizer
@@ -216,6 +244,7 @@ def main(model_type, experiment_name, n_epochs, batch_size, beta_0, lr, clip, ve
     )
     # Train the model
     mt.train(floor_data)
+
 
 if __name__ == "__main__":
 

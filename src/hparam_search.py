@@ -14,6 +14,22 @@ import optuna
 import torch
 
 
+def get_mse(model, floor_data_full, test_mask):
+
+    mini_batch = floor_data_full[test_mask.nonzero().flatten()]
+
+    mini_batch_position = mini_batch[3]
+    mini_batch_position_mask = mini_batch[4]
+
+    with torch.no_grad():
+        loc_q, _ = model.guide(*mini_batch)
+        x_est = loc_q[mini_batch_position_mask, :]
+
+    x_hat = mini_batch_position[mini_batch_position_mask, :]
+
+    return ((x_est - x_hat) ** 2).sum(-1).mean()
+
+
 class Objective:
     def __init__(
         self,
@@ -67,6 +83,29 @@ class Objective:
             test_percent=test_percent,
         )
 
+        self.floor_data_full = FloorDataset(
+            site_id=site_id,
+            floor_id=floor_id,
+            wifi_threshold=200,
+            include_wifi=include_wifi,
+            include_beacon=include_beacon,
+            validation_percent=None,
+            test_percent=None,
+        )
+
+    def get_loss(self):
+
+        if self.use_elbo:
+            return self.mt.loss_history[-1]
+        else:
+            return float(
+                get_mse(
+                    self.mt.model,
+                    self.floor_data_full,
+                    self.floor_data.test_mask,
+                )
+            )
+
     def __call__(self, trial: optuna.trial.Trial):
 
         beta_0 = trial.suggest_loguniform("beta_0", 1e-4, 1)
@@ -90,7 +129,10 @@ class Objective:
         n_epochs = self.n_epochs
         batch_size = self.batch_size
 
-        mt = ModelTrainer(
+        def callback(epoch):
+            trial.report(self.get_loss(), epoch)
+
+        self.mt = ModelTrainer(
             model=model,
             optimizer=optimizer,
             model_label=f"{self.model_type}_hparam_{trial.number:03}",
@@ -98,13 +140,12 @@ class Objective:
             batch_size=batch_size,
             beta_0=beta_0,
             verbosity=0,
+            save_every=5,
+            post_epoch_callback=callback,
         )
-        mt.train(self.floor_data)
+        self.mt.train(self.floor_data)
 
-        if self.use_elbo:
-            return mt.loss_history[-1]
-        else:
-            raise NotImplementedError
+        return self.get_loss()
 
 
 @click.command()
