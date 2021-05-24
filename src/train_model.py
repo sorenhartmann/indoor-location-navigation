@@ -48,13 +48,15 @@ def main(model_type, experiment_name, n_epochs, batch_size, beta_0, lr, verbosit
         validation_percent=validation_percent,
         test_percent=test_percent,
     )
-    # Setup model
+    # Setup model 
     model = ModelClass(floor_data)
 
+    gamma = 0.1  # final learning rate will be gamma * initial_lr
+    lrd = gamma ** (1 / n_epochs)
+
     # Setup the optimizer
-    adam_params = {"lr": lr}  # ., "betas":(0.95, 0.999)}
-    #optimizer = torch.optim.Adam(model.parameters(), **adam_params)
-    optimizer = pyro.optim.Adam(adam_params)
+    adam_params = {"lr": lr, "lrd": lrd, "betas":(0.95, 0.999)}
+    optimizer = pyro.optim.ClippedAdam(adam_params)
 
     if experiment_name == "unnamed":
         experiment_name = f"{model_type}-model"
