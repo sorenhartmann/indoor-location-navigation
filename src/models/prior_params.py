@@ -8,9 +8,9 @@ prior_params = {
 
     # grundsignal styrke spredning.
     "sigma_omega_0": 10.0,
-
     # How accurate is the measured signal stregth
-    "sigma_omega": 5.0,
+    "sigma_omega": 3.0,
+
 
     # Beacon uncertainty
     "sigma_delta": 10.
