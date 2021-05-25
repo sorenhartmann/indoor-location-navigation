@@ -207,7 +207,7 @@ def plot_traces(model, mini_batch, ax=None):
         ax.plot(*x_hat.T, "-o", color=f"C{i}", label=f"trace {mini_batch_index[i]}")
         ax.plot(*loc_q[i].T, linestyle="--", color=f"C{i}")
 
-        for j in range(100, mini_batch_length[i], 50):
+        for j in mini_batch_position_mask[i].nonzero().flatten():
             ax.plot(*loc_q[i, j, :], "x", color=f"C{i}")
             ax.add_patch(
                 plt.Circle(loc_q[i, j, :], 2 * scale_q[i], fill=False, color=f"C{i}")
@@ -234,7 +234,7 @@ def get_wifi_ids(model, scale_thresshold = 20):
     }).sort_values("scale_combined")
     
 
-def plot_wifi(model, ax=None, scale_thresshold = 1000, alpha = 0.2, wifi_ids = None):
+def plot_wifi(model, ax=None, scale_thresshold = 1000, alpha = 0.2, wifi_ids = None, color=None):
 
     if ax is None:
         ax = plt.gca()
@@ -251,12 +251,16 @@ def plot_wifi(model, ax=None, scale_thresshold = 1000, alpha = 0.2, wifi_ids = N
         if(wifi_ids is None and any(scale[i] > scale_thresshold)):
             continue
         ax.plot(*wifi_locations[i, :], ".", color=f"C{i}")
+        if color is None:
+            color_=f"C{i}"
+        else:
+            color_=color
         ax.add_patch(
             mp.Ellipse(
                 wifi_locations[i, :],
                 *(2 * scale[i]),
                 fill=False,
-                color=f"C{i}",
+                color=color_,
                 alpha=0.8,
             )
         )
