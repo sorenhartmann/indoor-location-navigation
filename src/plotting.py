@@ -80,7 +80,7 @@ def _get_wifi_strengths(floor_data, bssid):
     return pd.DataFrame(wifi_strengths)
 
 
-def plot_observed_wifi(floor_data, wifi_index, ax=None):
+def plot_observed_wifi(floor_data, wifi_index, ax=None, color = "grey", hue = "rssi", with_scatter = True):
 
     if ax is None:
         ax = plt.gca()
@@ -91,26 +91,31 @@ def plot_observed_wifi(floor_data, wifi_index, ax=None):
     bssid = floor_data.bssids_[wifi_index]
     wifi_strengths_df = _get_wifi_strengths(floor_data, bssid)
 
-    points = sns.scatterplot(
-        data=wifi_strengths_df,
-        x="x",
-        y="y",
-        size="rssi",
-        hue="rssi",
-        ax=ax,
-        legend=False,
-    )
+    if with_scatter:
+        points = sns.scatterplot(
+            data=wifi_strengths_df,
+            x="x",
+            y="y",
+            size="rssi",
+            hue="rssi" if hue == "rssi" else None,
+            ax=ax,
+            legend=False,
+            color = color
+        )
+        
+
     sns.kdeplot(
         data=wifi_strengths_df,
         x="x",
         y="y",
         weights="rssi",
-        color="grey",
+        color=color,
         alpha=0.5,
         ax=ax,
     )
 
-    return points
+    if with_scatter:
+        return points
 
 
 def _get_beacon_strengths(floor_data, uuids):
@@ -209,7 +214,56 @@ def plot_traces(model, mini_batch, ax=None):
             )
 
 
-def plot_wifi(model, ax=None):
+def get_wifi_ids(model, scale_thresshold = 20):
+    with torch.no_grad():
+        wifi_locations = model.wifi_location_q.numpy()
+        scale = model.wifi_location_log_sigma_q.exp().numpy()
+    
+    wifi_ids = []
+
+    for i in range(scale.shape[0]):
+        if(any(scale[i] > scale_thresshold)):
+            continue
+        wifi_ids.append(i)
+    
+    return pd.DataFrame({
+        "wifi_id":wifi_ids,
+        "scalex": scale[wifi_ids,0],
+        "scaley": scale[wifi_ids,1],
+        "scale_combined": scale[wifi_ids,:].sum(1),
+    }).sort_values("scale_combined")
+    
+
+def plot_wifi(model, ax=None, scale_thresshold = 1000, alpha = 0.2, wifi_ids = None):
+
+    if ax is None:
+        ax = plt.gca()
+    
+    wifi_ids_tmp = []    
+    
+    with torch.no_grad():
+        wifi_locations = model.wifi_location_q.numpy()
+        scale = model.wifi_location_log_sigma_q.exp().numpy()
+
+    for i in range(scale.shape[0]):
+        if(wifi_ids is not None and i not in wifi_ids):
+            continue
+        if(wifi_ids is None and any(scale[i] > scale_thresshold)):
+            continue
+        ax.plot(*wifi_locations[i, :], ".", color=f"C{i}")
+        ax.add_patch(
+            mp.Ellipse(
+                wifi_locations[i, :],
+                *(2 * scale[i]),
+                fill=False,
+                color=f"C{i}",
+                alpha=0.8,
+            )
+        )
+        wifi_ids_tmp.append(i)
+    return(wifi_ids_tmp)
+
+def plot_emperical_and_infered_wifi(model,floor_data, wifi_ids, ax = None, with_scatter = True):
 
     if ax is None:
         ax = plt.gca()
@@ -218,19 +272,18 @@ def plot_wifi(model, ax=None):
         wifi_locations = model.wifi_location_q.numpy()
         scale = model.wifi_location_log_sigma_q.exp().numpy()
 
-    for i in range(scale.shape[0]):
-
-        ax.plot(*wifi_locations[i, :], ".", color=f"C{i}")
+    for i in wifi_ids:
+        ax.plot(*wifi_locations[i, :], "*", markersize = 10,color=f"C{i}")
         ax.add_patch(
             mp.Ellipse(
                 wifi_locations[i, :],
                 *(2 * scale[i]),
                 fill=False,
                 color=f"C{i}",
-                alpha=0.2,
+                alpha=0.8,
             )
         )
-
+        plot_observed_wifi(floor_data, i, ax=ax, color = f"C{i}", hue = f"C{i}", with_scatter=with_scatter)
 
 def plot_beacons(model, ax=None):
 
