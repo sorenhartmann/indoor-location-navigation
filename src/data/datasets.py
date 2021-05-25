@@ -103,7 +103,7 @@ class FloorDataset(Dataset):
         self.validation_mask = torch.full((len(self.traces),), False)
         self.test_mask = torch.full((len(self.traces),), False)
 
-        if validation_percent is not None and test_percent is not None:
+        if validation_percent is not None or test_percent is not None:
             random.seed(split_seed)
 
         if validation_percent is not None:
