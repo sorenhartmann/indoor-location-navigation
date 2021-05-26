@@ -44,7 +44,7 @@ def cd(path):
         os.chdir(prev_cwd)
 
 
-def get_best_trial(study_name):
+def get_study(study_name):
 
     with cd(root_dir):
         storage_name = "sqlite:///optuna-storage.db"
