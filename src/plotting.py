@@ -19,6 +19,7 @@ from src.data.datasets import (
 )
 import seaborn as sns
 
+from src.models.initial_model import InitialModel
 
 def plot_observed_trace(trace_data, ax=None):
 
@@ -274,8 +275,38 @@ def plot_traces(model, mini_batch, ax=None):
                 plt.Circle(loc_q[i, j, :], 2 * scale_q[i], fill=False, color=f"C{i}")
             )
 
+import numpy as np
+def plot_diff_x_and_xhat(model, mini_batch, ax=None):
 
-def get_wifi_ids(model, scale_thresshold = 20):
+    if ax is None:
+        ax = plt.gca()
+
+    mini_batch_index = mini_batch[0]
+    mini_batch_length = mini_batch[1]
+    mini_batch_position = mini_batch[3]
+    mini_batch_position_mask = mini_batch[4]
+
+    with torch.no_grad():
+        loc_q, scale_q = model.guide(*mini_batch)
+        loc_q[loc_q == 0] = float("nan")
+
+    x_hat_imputed = np.zeros((max(mini_batch_length),2))
+    for i in range(len(mini_batch_index)):
+        x_hat = mini_batch_position[i, mini_batch_position_mask[i], :]
+        time = np.linspace(0, (max(mini_batch_length)-1)/10,max(mini_batch_length))
+        x_hat_imputed[:,0] = np.interp(time, time[mini_batch_position_mask[i]], x_hat[:,0].numpy())
+        x_hat_imputed[:,1] = np.interp(time, time[mini_batch_position_mask[i]], x_hat[:,1].numpy())
+        x = loc_q[i].numpy()
+        #x = loc_q[i, mini_batch_position_mask[i], : ]
+        dist = np.sqrt(((x_hat_imputed-x)**2).sum(1))
+
+        ax.plot(time, dist, "-", linewidth=3,color=f"C{i}", label=f"trace {mini_batch_index[i]}")
+        for j in mini_batch_position_mask[i].nonzero().flatten():
+            ax.plot(time[j],dist[j],markersize = 8, marker = "o", color=f"C{i}")
+
+
+
+def get_wifi_ids(model, scale_threshold = 20):
     with torch.no_grad():
         wifi_locations = model.wifi_location_q.numpy()
         scale = model.wifi_location_log_sigma_q.exp().numpy()
@@ -283,7 +314,7 @@ def get_wifi_ids(model, scale_thresshold = 20):
     wifi_ids = []
 
     for i in range(scale.shape[0]):
-        if(any(scale[i] > scale_thresshold)):
+        if(any(scale[i] > scale_threshold)):
             continue
         wifi_ids.append(i)
     
@@ -360,3 +391,19 @@ def plot_beacons(model, beacon_indices=None, ax=None, color=None, **kwargs):
         )
 
 
+if __name__ == "__main__":
+
+    site_id = "5a0546857ecc773753327266"
+    floor_id = "B1"
+    floor_data = FloorDataset(site_id, floor_id, wifi_threshold=200, sampling_interval=100, include_wifi=False, include_beacon=False)
+    initial_model = InitialModel(floor_data)
+
+    mini_batch = floor_data[torch.tensor([2,5,10,20, 30])]
+    mini_batch_index = mini_batch[0]
+    mini_batch_length = mini_batch[1]
+    mini_batch_time = mini_batch[2]
+    mini_batch_position = mini_batch[3]
+    mini_batch_position_mask = mini_batch[4]
+
+
+    plot_diff_x_and_xhat(initial_model, mini_batch, ax=None)
