@@ -1,10 +1,11 @@
 import matplotlib.pyplot as plt
 import matplotlib.patches as mp
+import numpy as np
 from scipy.interpolate import interp1d
 from seaborn.palettes import color_palette
 import torch
 from matplotlib.collections import LineCollection
-from matplotlib.colors import LogNorm
+from matplotlib.colors import LogNorm, FuncNorm
 
 from tqdm import tqdm
 import functools
@@ -46,79 +47,117 @@ def plot_observed_trace(trace_data, ax=None):
     return line
 
 
-@functools.lru_cache(20)
-def _get_wifi_strengths(floor_data, bssid):
+# @functools.lru_cache(20)
+# def get_wifi_strengths(floor_data, bssid):
+
+#     wifi_strengths = {
+#         "x": [],
+#         "y": [],
+#         "rssi": [],
+#         "bssid": [],
+#     }
+
+#     for trace in floor_data.traces:
+
+#         wifi_data = trace.data["TYPE_WIFI"][trace.data["TYPE_WIFI"]["bssid"] == bssid]
+#         interpolated_wifi = (
+#             pd.DataFrame(
+#                 {
+#                     "x": trace.data["TYPE_WAYPOINT"]["x"],
+#                     "y": trace.data["TYPE_WAYPOINT"]["y"],
+#                     "rssi": wifi_data["rssi"].groupby("time").mean(),
+#                 }
+#             )
+#             .interpolate("time")
+#             .bfill()
+#             .reindex(trace.data["TYPE_WAYPOINT"].index)
+#         )
+
+#         wifi_strengths["x"].extend(interpolated_wifi["x"])
+#         wifi_strengths["y"].extend(interpolated_wifi["y"])
+#         wifi_strengths["rssi"].extend(interpolated_wifi["rssi"])
+#         wifi_strengths["bssid"].extend(len(interpolated_wifi) * [bssid])
+
+#     return pd.DataFrame(wifi_strengths)
+
+def get_wifi_strengths(floor_data, bssids):
 
     wifi_strengths = {
         "x": [],
         "y": [],
-        "rssi": [],
         "bssid": [],
+        "rssi": [],
     }
+
+    bssid_set = set(bssids)
 
     for trace in floor_data.traces:
 
-        wifi_data = trace.data["TYPE_WIFI"][trace.data["TYPE_WIFI"]["bssid"] == bssid]
-        interpolated_wifi = (
-            pd.DataFrame(
-                {
-                    "x": trace.data["TYPE_WAYPOINT"]["x"],
-                    "y": trace.data["TYPE_WAYPOINT"]["y"],
-                    "rssi": wifi_data["rssi"].groupby("time").mean(),
-                }
-            )
-            .interpolate("time")
-            .bfill()
-            .reindex(trace.data["TYPE_WAYPOINT"].index)
-        )
+        for bssid, wifi_data in trace.data["TYPE_WIFI"].groupby("bssid"):
 
-        wifi_strengths["x"].extend(interpolated_wifi["x"])
-        wifi_strengths["y"].extend(interpolated_wifi["y"])
-        wifi_strengths["rssi"].extend(interpolated_wifi["rssi"])
-        wifi_strengths["bssid"].extend(len(interpolated_wifi) * [bssid])
+            if bssid not in bssid_set:
+                continue
+
+            interpolated_wifi = (
+                    pd.DataFrame(
+                        {
+                            "x": trace.data["TYPE_WAYPOINT"]["x"],
+                            "y": trace.data["TYPE_WAYPOINT"]["y"],
+                            "rssi": wifi_data["rssi"].groupby("time").mean(),
+                        }
+                    )
+                    .interpolate("time")
+                    .bfill()
+                    .reindex(trace.data["TYPE_WAYPOINT"].index)
+                )
+
+            wifi_strengths["x"].extend(interpolated_wifi["x"])
+            wifi_strengths["y"].extend(interpolated_wifi["y"])
+            wifi_strengths["rssi"].extend(interpolated_wifi["rssi"])
+            wifi_strengths["bssid"].extend(len(interpolated_wifi) * [bssid])
 
     return pd.DataFrame(wifi_strengths)
 
 
-def plot_observed_wifi(floor_data, wifi_index, ax=None, color = "grey", hue = "rssi", with_scatter = True):
+# def plot_observed_wifi(floor_data, wifi_index, ax=None, color = "grey", hue = "rssi", with_scatter = True):
 
-    if ax is None:
-        ax = plt.gca()
+#     if ax is None:
+#         ax = plt.gca()
 
-    if not hasattr(floor_data, "bssids_"):
-        floor_data._generate_tensors()
+#     if not hasattr(floor_data, "bssids_"):
+#         floor_data._generate_tensors()
 
-    bssid = floor_data.bssids_[wifi_index]
-    wifi_strengths_df = _get_wifi_strengths(floor_data, bssid)
+#     bssid = floor_data.bssids_[wifi_index]
+#     wifi_strengths_df = _get_wifi_strengths(floor_data, bssid)
 
-    if with_scatter:
-        points = sns.scatterplot(
-            data=wifi_strengths_df,
-            x="x",
-            y="y",
-            size="rssi",
-            hue="rssi" if hue == "rssi" else None,
-            ax=ax,
-            legend=False,
-            color = color
-        )
+#     if with_scatter:
+#         points = sns.scatterplot(
+#             data=wifi_strengths_df,
+#             x="x",
+#             y="y",
+#             size="rssi",
+#             hue="rssi" if hue == "rssi" else None,
+#             ax=ax,
+#             legend=False,
+#             color = color
+#         )
         
 
-    sns.kdeplot(
-        data=wifi_strengths_df,
-        x="x",
-        y="y",
-        weights="rssi",
-        color=color,
-        alpha=0.5,
-        ax=ax,
-    )
+#     sns.kdeplot(
+#         data=wifi_strengths_df,
+#         x="x",
+#         y="y",
+#         weights="rssi",
+#         color=color,
+#         alpha=0.5,
+#         ax=ax,
+#     )
 
-    if with_scatter:
-        return points
+#     if with_scatter:
+#         return points
 
 
-def _get_beacon_strengths(floor_data, uuids):
+def get_beacon_distances(floor_data, uuids):
 
     beacon_strengths = {
         "x": [],
@@ -158,33 +197,55 @@ def _get_beacon_strengths(floor_data, uuids):
     return pd.DataFrame(beacon_strengths)
 
 
-def plot_observed_beacon(floor_data, beacon_index, ax=None, **kwargs):
+# def plot_observed_beacons(floor_data, beacon_index, ax=None, **kwargs):
 
-    if not hasattr(floor_data, "beacon_ids_"):
-        floor_data._generate_tensors()
+#     if not hasattr(floor_data, "beacon_ids_"):
+#         floor_data._generate_tensors()
 
-    if not hasattr(beacon_index, "__iter__"):
-        beacon_index = [beacon_index]
+#     if not hasattr(beacon_index, "__iter__"):
+#         beacon_index = [beacon_index]
 
-    uuids = [floor_data.beacon_ids_[i] for i in beacon_index]
-    beacon_strengths_df = _get_beacon_strengths(floor_data, uuids)
-    norm = LogNorm(vmin = beacon_strengths_df["distance"].min(), vmax = beacon_strengths_df["distance"].max())
+#     uuids = [floor_data.beacon_ids_[i] for i in beacon_index]
+#     beacon_strengths_df = _get_beacon_strengths(floor_data, uuids)
 
-    aspect = floor_data.info["map_info"]["width"] / floor_data.info["map_info"]["height"]
+#     aspect = floor_data.info["map_info"]["width"] / floor_data.info["map_info"]["height"]
 
-    return sns.relplot(
-        data=beacon_strengths_df,
-        x="x",
-        y="y",
-        kind="scatter",
-        size="distance",
-        hue="distance",
-        col="uuid",
-        hue_norm=norm,
-        size_norm=norm,
-        aspect=aspect,
-        **kwargs
-    )
+#     return sns.scatterplot(
+#         data=beacon_strengths_df,
+#         x="x",
+#         y="y",
+#         kind="scatter",
+#         size="distance",
+#         hue="distance",
+#         col="uuid",
+#         aspect=aspect,
+#         **kwargs
+#     )
+
+# def plot_observed_beacon(floor_data, beacon_index, ax=None, **kwargs):
+
+#     if not hasattr(floor_data, "beacon_ids_"):
+#         floor_data._generate_tensors()
+
+#     if not hasattr(beacon_index, "__iter__"):
+#         beacon_index = [beacon_index]
+
+#     uuids = [floor_data.beacon_ids_[i] for i in beacon_index]
+#     beacon_strengths_df = _get_beacon_strengths(floor_data, uuids)
+
+#     aspect = floor_data.info["map_info"]["width"] / floor_data.info["map_info"]["height"]
+
+#     return sns.scatterplot(
+#         data=beacon_strengths_df,
+#         x="x",
+#         y="y",
+#         kind="scatter",
+#         size="distance",
+#         hue="distance",
+#         col="uuid",
+#         aspect=aspect,
+#         **kwargs
+#     )
 
 
 def plot_traces(model, mini_batch, ax=None):
@@ -234,62 +295,41 @@ def get_wifi_ids(model, scale_thresshold = 20):
     }).sort_values("scale_combined")
     
 
-def plot_wifi(model, ax=None, scale_thresshold = 1000, alpha = 0.2, wifi_ids = None, color=None):
+def plot_wifi(model, wifi_indices=None, ax=None, color=None, **kwargs):
 
     if ax is None:
         ax = plt.gca()
-    
-    wifi_ids_tmp = []    
     
     with torch.no_grad():
         wifi_locations = model.wifi_location_q.numpy()
         scale = model.wifi_location_log_sigma_q.exp().numpy()
 
+    if wifi_indices is not None:
+        wifi_locations = wifi_locations[wifi_indices]
+        scale = scale[wifi_indices]
+
     for i in range(scale.shape[0]):
-        if(wifi_ids is not None and i not in wifi_ids):
-            continue
-        if(wifi_ids is None and any(scale[i] > scale_thresshold)):
-            continue
-        ax.plot(*wifi_locations[i, :], ".", color=f"C{i}")
+
         if color is None:
-            color_=f"C{i}"
+            color_ = f"C{i}"
         else:
-            color_=color
+            color_ = color
+
+        if "marker" not in kwargs:
+            kwargs["marker"] = "*"
+
+        ax.plot(*wifi_locations[i, :], color=color_, **kwargs)
         ax.add_patch(
             mp.Ellipse(
                 wifi_locations[i, :],
                 *(2 * scale[i]),
                 fill=False,
                 color=color_,
-                alpha=0.8,
+                alpha=0.5,
             )
         )
-        wifi_ids_tmp.append(i)
-    return(wifi_ids_tmp)
 
-def plot_emperical_and_infered_wifi(model,floor_data, wifi_ids, ax = None, with_scatter = True):
-
-    if ax is None:
-        ax = plt.gca()
-
-    with torch.no_grad():
-        wifi_locations = model.wifi_location_q.numpy()
-        scale = model.wifi_location_log_sigma_q.exp().numpy()
-
-    for i in wifi_ids:
-        ax.plot(*wifi_locations[i, :], "*", markersize = 10,color=f"C{i}")
-        ax.add_patch(
-            mp.Ellipse(
-                wifi_locations[i, :],
-                *(2 * scale[i]),
-                fill=False,
-                color=f"C{i}",
-                alpha=0.8,
-            )
-        )
-        plot_observed_wifi(floor_data, i, ax=ax, color = f"C{i}", hue = f"C{i}", with_scatter=with_scatter)
-
-def plot_beacons(model, ax=None):
+def plot_beacons(model, beacon_indices=None, ax=None, color=None, **kwargs):
 
     if ax is None:
         ax = plt.gca()
@@ -298,18 +338,25 @@ def plot_beacons(model, ax=None):
         beacon_locations = model.beacon_location_q.numpy()
         scale = model.beacon_location_log_sigma_q.exp().numpy()
 
+    if beacon_indices is not None:
+        beacon_locations = beacon_locations[beacon_indices]
+        scale = scale[beacon_indices]
+
     for i in range(scale.shape[0]):
 
-        ax.plot(*beacon_locations[i, :], ".", color=f"C{i}")
+        if color is None:
+            color_ = f"C{i}"
+        else:
+            color_ = color
+
+        if "marker" not in kwargs:
+            kwargs["marker"] = "*"
+
+        ax.plot(*beacon_locations[i, :], ".", color=color_)
         ax.add_patch(
             mp.Ellipse(
-                beacon_locations[i, :], *(2 * scale[i]), fill=False, color=f"C{i}"
+                beacon_locations[i, :], *(2 * scale[i]), fill=False, color=color_
             )
         )
 
 
-if __name__ == "__main__":
-
-    floor_data = FloorDataset("5d2709b303f801723c327472", "1F")
-
-    plot_observed_beacon(floor_data, [1,2,3])
