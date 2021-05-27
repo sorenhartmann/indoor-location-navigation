@@ -110,11 +110,11 @@ class Objective:
 
         beta_0 = trial.suggest_loguniform("beta_0", 1e-4, 1)
         lr = trial.suggest_loguniform("lr", 1e-3, 5e-2)
-        sigma_eps = trial.suggest_uniform("sigma_eps", 0.1, 0.5)
+        sigma = trial.suggest_uniform("sigma", 0.1, 0.5)
 
         use_clip = trial.suggest_categorical("clip", [True, False])
 
-        model = self.ModelClass(self.floor_data, prior_params={"sigma_eps": sigma_eps})
+        model = self.ModelClass(self.floor_data, prior_params={"sigma": sigma})
 
         # Setup the optimizer
         if use_clip:

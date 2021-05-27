@@ -119,8 +119,8 @@ class BeaconModel(torch.nn.Module):
             self.floor_uniform.mean, self.floor_uniform.stddev
         ).to_event(1)
 
-        sigma_eps = torch.tensor(self.prior_params["sigma_eps"], device=device)
         sigma = torch.tensor(self.prior_params["sigma"], device=device)
+        sigma_eps = torch.tensor(self.prior_params["sigma_eps"], device=device)
         mu_omega_0 = torch.tensor(self.prior_params["mu_omega_0"], device=device)
         sigma_omega_0 = torch.tensor(self.prior_params["sigma_omega_0"], device=device)
         sigma_omega = torch.tensor(self.prior_params["sigma_omega"], device=device)
@@ -141,7 +141,7 @@ class BeaconModel(torch.nn.Module):
                 for t in pyro.markov(range(1, T_max)):
                     x[..., t, :] = sample(
                         f"x_{t}",
-                        dist.Normal(x[..., t - 1, :], sigma_eps)
+                        dist.Normal(x[..., t - 1, :], sigma)
                         .to_event(1)
                         .mask(t < mini_batch_length),
                     )
@@ -149,7 +149,7 @@ class BeaconModel(torch.nn.Module):
         with pyro.plate("x_observed", mini_batch_position_mask.sum()):
             sample(
                 "x_hat",
-                dist.Normal(x[..., mini_batch_position_mask, :], sigma).to_event(1),
+                dist.Normal(x[..., mini_batch_position_mask, :], sigma_eps).to_event(1),
                 obs=mini_batch_position[mini_batch_position_mask],
             )
 
