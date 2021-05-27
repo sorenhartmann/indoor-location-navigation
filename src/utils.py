@@ -44,10 +44,12 @@ def cd(path):
         os.chdir(prev_cwd)
 
 
-def get_study(study_name):
+def get_study(study_name, storage_file="optuna-storage.db"):
+
+
 
     with cd(root_dir):
-        storage_name = "sqlite:///optuna-storage.db"
+        storage_name = f"sqlite:///{storage_file}"
         study = optuna.load_study(
             study_name=study_name,
             storage=storage_name,
